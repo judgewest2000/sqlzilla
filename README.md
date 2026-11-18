@@ -37,11 +37,19 @@ Use Windows Settings > Apps, or run the one-liner above with `-Uninstall`.
 - **Read-only groups**: connections use `ApplicationIntent=ReadOnly`, and scripts containing writes (INSERT, UPDATE, DELETE, DDL and so on) ask for confirmation before running.
 - **Authentication**: SQL Server login, Windows, Microsoft Entra ID (interactive/MFA, default credentials, password, service principal) or a raw connection string.
 - **Results**: one or more grids of results. Scripts that return no rows show messages such as `(2 rows affected)` and `Commands completed successfully.`. Errors show their line number, and clicking an error jumps to that line.
-- **Editor**: native code editor (Scintilla) with T-SQL highlighting and autocomplete for tables, columns and keywords.
+- **Editor**: native code editor (Scintilla) with T-SQL highlighting.
   - Runs `GO` batches.
   - Executes the selection only, if there is one.
   - Cancel a running query.
   - Copy results or save them as CSV.
+- **IntelliSense**: uses the schema of the connected database.
+  - Context-aware completion: tables after `FROM`, columns via aliases (`o.`), procedures after `EXEC`, `@variables` and `#temp` tables.
+  - Join suggestions built from foreign keys, e.g. `JOIN dbo.Customers c ON c.CustomerId = o.CustomerId`.
+  - Understands CTEs, temp tables, table variables, `SELECT INTO` and derived tables.
+  - Signature help for built-in functions, user functions and stored procedure parameters.
+  - Hover for column types, keys and foreign keys, and object or function details.
+  - Red squiggles for syntax errors; amber squiggles for unknown tables and procedures.
+  - F1 opens a schema docs panel for the item under the caret. It has search, columns, parameters and foreign-key links.
 
 Connections are stored in `%LOCALAPPDATA%\Sqlzilla\connections.json`. Passwords and secrets are encrypted with Windows DPAPI.
 
@@ -57,6 +65,9 @@ Like Notepad++, open tabs are remembered between runs in `%LOCALAPPDATA%\Sqlzill
 | Ctrl+W | Close tab |
 | Ctrl+R | Show or hide results |
 | Ctrl+F | Find |
+| Ctrl+Space | Show completions |
+| Ctrl+Shift+Space | Show parameter info |
+| F1 | Schema docs for the item under the caret |
 
 ## Updates
 

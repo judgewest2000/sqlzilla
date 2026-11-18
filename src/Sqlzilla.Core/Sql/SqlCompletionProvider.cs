@@ -1,6 +1,6 @@
 namespace Sqlzilla.Sql;
 
-public enum CompletionKind { Keyword, Schema, Table, View, Procedure, Function, Column, Variable }
+public enum CompletionKind { Keyword, Schema, Table, View, Procedure, Function, Column, Variable, Join, Local }
 
 public sealed record CompletionItem(string Label, CompletionKind Kind, string InsertText, string? Detail = null);
 
@@ -11,176 +11,276 @@ public sealed record CompletionResult(int ReplaceStart, string Prefix, IReadOnly
 }
 
 /// <summary>
-/// T-SQL autocomplete: keywords, schema objects, columns of the tables referenced in the statement,
-/// and "alias." / "schema." member completion.
+/// Context-aware T-SQL autocomplete: tables after FROM/JOIN (with foreign-key join suggestions), procedures after EXEC,
+/// columns of the tables in the current statement, "alias." / "schema." members, CTEs, #temp tables, @table variables,
+/// built-in functions, keywords and variables.
 /// </summary>
 public static class SqlCompletionProvider
 {
     private const int MaxItems = 400;
 
+    private enum Context { General, Table, Procedure }
+
+    private static readonly HashSet<string> TableKeywords = new(StringComparer.OrdinalIgnoreCase)
+        { "FROM", "JOIN", "UPDATE", "INTO", "APPLY", "USING", "MERGE", "TABLE" };
+
     public static CompletionResult Complete(string text, int caret, SchemaInfo schema, bool explicitRequest)
     {
         caret = Math.Clamp(caret, 0, text.Length);
-        if (InsideCommentOrString(text, caret)) return CompletionResult.Empty;
+        if (SqlAnalysis.InsideCommentOrString(text, caret)) return CompletionResult.Empty;
 
         var start = caret;
         while (start > 0 && (SqlTokenizer.IsIdentPart(text[start - 1]) || text[start - 1] == '[')) start--;
         var prefix = text[start..caret];
         var prefixMatch = prefix.TrimStart('[');
+        if (prefix.Length > 0 && prefix.All(char.IsDigit)) return CompletionResult.Empty;
+
+        var tokens = SqlAnalysis.Code(text);
+        var before = tokens.FindLastIndex(t => t.End <= start);
+        var (stmtStart, stmtEnd) = SqlAnalysis.StatementRange(text, tokens, caret);
+        var locals = SqlAnalysis.Locals(text, tokens, schema);
+        var scope = schema.WithLocals(locals);
+        var refs = SqlAnalysis.References(text, tokens, stmtStart, stmtEnd, scope);
+        var context = ContextAt(text, tokens, before);
 
         if (start > 0 && text[start - 1] == '.')
         {
-            var qualifier = ReadQualifier(text, start - 1);
-            return qualifier == null ? CompletionResult.Empty : new(start, prefix, Filter(MemberItems(text, qualifier, schema), prefixMatch));
+            var qualifier = ReadQualifier(text, start - 1, out var qualifierStart);
+            if (qualifier == null) return CompletionResult.Empty;
+            var outer = qualifierStart > 0 && text[qualifierStart - 1] == '.' ? ReadQualifier(text, qualifierStart - 1, out _) : null;
+            var members = MemberItems(qualifier, outer, refs, scope, caret, context);
+            return new(start, prefix, Filter(members, prefixMatch, context));
         }
 
         if (prefix.Length == 0 && !explicitRequest) return CompletionResult.Empty;
-        if (prefix.StartsWith('@')) return new(start, prefix, Filter(Variables(text, prefix), prefixMatch));
-        if (prefix.All(char.IsDigit) && prefix.Length > 0) return CompletionResult.Empty;
+        if (AtAlias(text, tokens, before) && !explicitRequest) return CompletionResult.Empty;
 
-        var items = new List<CompletionItem>();
-        var referenced = ReferencedObjects(text, schema);
-        foreach (var (obj, alias) in referenced)
-            foreach (var col in obj.Columns)
-                items.Add(new(col, CompletionKind.Column, Quote(col), alias ?? obj.Name));
-        foreach (var obj in schema.Objects)
-            items.Add(new(obj.Name, KindOf(obj), $"{Quote(obj.Schema)}.{Quote(obj.Name)}", obj.Schema));
-        foreach (var s in schema.Schemas)
-            items.Add(new(s, CompletionKind.Schema, Quote(s), "schema"));
-        foreach (var k in SqlKeywords.CompletionKeywords)
-            items.Add(new(k, CompletionKind.Keyword, k));
+        if (prefix.StartsWith('@'))
+        {
+            var items = new List<CompletionItem>();
+            if (context == Context.Table)
+                items.AddRange(LocalItems(locals.Where(l => l.Name.StartsWith('@'))));
+            else if (SqlAnalysis.ExecCall(text, tokens, caret, scope) is { } exec)
+                items.AddRange(exec.Proc.Parameters.Select(p => new CompletionItem(p.Name, CompletionKind.Variable, p.Name + " = ", p.Type + (p.IsOutput ? " OUTPUT" : ""))));
+            items.AddRange(Variables(text, tokens, prefix));
+            return new(start, prefix, Filter(items, prefixMatch, context));
+        }
 
-        return new(start, prefix, Filter(items, prefixMatch));
+        if (prefix.StartsWith('#'))
+            return new(start, prefix, Filter(LocalItems(locals.Where(l => l.Name.StartsWith('#'))), prefixMatch, context));
+
+        var result = context switch
+        {
+            Context.Table => TableItems(text, tokens, before, refs, scope, locals, caret),
+            Context.Procedure => ProcedureItems(scope),
+            _ => GeneralItems(refs, scope, caret),
+        };
+        return new(start, prefix, Filter(result, prefixMatch, context));
     }
 
-    private static IEnumerable<CompletionItem> MemberItems(string text, string qualifier, SchemaInfo schema)
+    private static Context ContextAt(string text, List<SqlToken> tokens, int before)
     {
-        var referenced = ReferencedObjects(text, schema);
-        var target = referenced.FirstOrDefault(a => string.Equals(a.Alias, qualifier, StringComparison.OrdinalIgnoreCase)).Object
-                     ?? referenced.FirstOrDefault(a => a.Object.Name.Equals(qualifier, StringComparison.OrdinalIgnoreCase)).Object;
-        var isSchema = schema.Schemas.Contains(qualifier, StringComparer.OrdinalIgnoreCase);
-        if (target == null && !isSchema) target = schema.Find(null, qualifier);
-        if (target != null)
-            return target.Columns.Select(c => new CompletionItem(c, CompletionKind.Column, Quote(c), target.Name));
-
-        return schema.Objects
-            .Where(o => o.Schema.Equals(qualifier, StringComparison.OrdinalIgnoreCase))
-            .Select(o => new CompletionItem(o.Name, KindOf(o), Quote(o.Name), o.Kind.ToString().ToLowerInvariant()));
+        if (before < 0) return Context.General;
+        var word = SqlAnalysis.KeywordAt(text, tokens, before);
+        if (word is "EXEC" or "EXECUTE") return Context.Procedure;
+        if (TableKeywords.Contains(word)) return Context.Table;
+        if (SqlAnalysis.IsOp(text, tokens[before], ',') && SqlAnalysis.InFromClause(text, tokens, before)) return Context.Table;
+        // FROM schema.| — the dotted chain started in a table position
+        if (SqlAnalysis.IsOp(text, tokens[before], '.'))
+        {
+            var i = before;
+            while (SqlAnalysis.IsOp(text, tokens, i, '.') && SqlAnalysis.IsObjectName(tokens, i - 1)) i -= 2;
+            return ContextAt(text, tokens, i);
+        }
+        return Context.General;
     }
 
-    private static IEnumerable<CompletionItem> Variables(string text, string prefix) =>
-        SqlTokenizer.Tokenize(text)
+    /// <summary>True when the caret is where a table alias is typed ("FROM dbo.Customers |", "… AS |").</summary>
+    private static bool AtAlias(string text, List<SqlToken> tokens, int before)
+    {
+        if (before < 0) return false;
+        if (SqlAnalysis.IsKeyword(text, tokens, before, "AS")) return true;
+        if (!SqlAnalysis.IsObjectName(tokens, before)) return false;
+        var i = before;
+        while (SqlAnalysis.IsOp(text, tokens, i - 1, '.') && SqlAnalysis.IsObjectName(tokens, i - 2)) i -= 2;
+        if (SqlAnalysis.IsOp(text, tokens, i - 1, '.')) return false;
+        var word = SqlAnalysis.KeywordAt(text, tokens, i - 1);
+        return word is "FROM" or "JOIN" or "APPLY" or "UPDATE" or "USING" or "MERGE"
+               || (SqlAnalysis.IsOp(text, tokens, i - 1, ',') && SqlAnalysis.InFromClause(text, tokens, i - 1));
+    }
+
+    private static IEnumerable<CompletionItem> GeneralItems(List<TableReference> refs, SchemaInfo scope, int caret)
+    {
+        // Columns of the nearest reference first when names repeat (self-joins, repeated aliases).
+        foreach (var r in refs.OrderBy(r => Math.Abs(r.Position - caret)))
+            foreach (var col in r.Object.Columns)
+                yield return Column(col, r.Qualifier);
+        foreach (var r in refs.Where(r => r.Alias != null))
+            yield return new(r.Alias!, CompletionKind.Local, r.Alias!, $"alias · {r.Object.DisplayName}");
+        foreach (var f in SqlBuiltins.All.Values)
+            yield return new(f.Name, CompletionKind.Function, f.Name, f.Returns);
+        foreach (var k in SqlKeywords.CompletionKeywords)
+            yield return new(k, CompletionKind.Keyword, k);
+        foreach (var obj in scope.Objects)
+            yield return Object(obj);
+        foreach (var s in scope.Schemas)
+            yield return new(s, CompletionKind.Schema, Quote(s), "schema");
+    }
+
+    private static IEnumerable<CompletionItem> TableItems(string text, List<SqlToken> tokens, int before, List<TableReference> refs,
+        SchemaInfo scope, List<SchemaObject> locals, int caret)
+    {
+        if (SqlAnalysis.IsKeyword(text, tokens, before, "JOIN") || SqlAnalysis.IsKeyword(text, tokens, before, "APPLY"))
+            foreach (var join in JoinItems(refs.Where(r => r.Position < caret).ToList(), scope))
+                yield return join;
+        foreach (var item in LocalItems(locals.Where(l => !l.Name.StartsWith('@'))))
+            yield return item;
+        foreach (var obj in scope.Objects.Where(o => o.Kind != SchemaObjectKind.Local && o.IsTableLike))
+            yield return Object(obj);
+        foreach (var s in scope.Schemas)
+            yield return new(s, CompletionKind.Schema, Quote(s), "schema");
+    }
+
+    private static IEnumerable<CompletionItem> ProcedureItems(SchemaInfo scope)
+    {
+        foreach (var obj in scope.Objects.Where(o => o.Kind == SchemaObjectKind.Procedure))
+            yield return Object(obj);
+        foreach (var s in scope.Schemas)
+            yield return new(s, CompletionKind.Schema, Quote(s), "schema");
+    }
+
+    private static IEnumerable<CompletionItem> LocalItems(IEnumerable<SchemaObject> locals) =>
+        locals.Where(l => l.LocalKind != "derived table")
+            .Select(l => new CompletionItem(l.Name, CompletionKind.Local,
+                l.Name.StartsWith('#') || l.Name.StartsWith('@') ? l.Name : Quote(l.Name), l.KindLabel));
+
+    /// <summary>"Orders o ON o.CustomerId = c.CustomerId" for every foreign key between an already-referenced table and another.</summary>
+    private static IEnumerable<CompletionItem> JoinItems(List<TableReference> existing, SchemaInfo scope)
+    {
+        var used = new HashSet<string>(existing.Select(r => r.Qualifier), StringComparer.OrdinalIgnoreCase);
+        foreach (var r in existing)
+        {
+            foreach (var fk in scope.ForeignKeys)
+            {
+                if (fk.From(r.Object) && FindTable(scope, fk.ToSchema, fk.ToTable) is { } to)
+                    yield return Join(to, fk.ToColumns, r, fk.FromColumns, fk.Name, used);
+                if (fk.To(r.Object) && FindTable(scope, fk.FromSchema, fk.FromTable) is { } from)
+                    yield return Join(from, fk.FromColumns, r, fk.ToColumns, fk.Name, used);
+            }
+        }
+    }
+
+    private static SchemaObject? FindTable(SchemaInfo scope, string schema, string name) =>
+        scope.Objects.FirstOrDefault(o => o.Kind != SchemaObjectKind.Local
+                                          && o.Schema.Equals(schema, StringComparison.OrdinalIgnoreCase)
+                                          && o.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    private static CompletionItem Join(SchemaObject target, IReadOnlyList<string> targetColumns, TableReference other,
+        IReadOnlyList<string> otherColumns, string fkName, HashSet<string> used)
+    {
+        var alias = MakeAlias(target.Name, used);
+        var on = string.Join(" AND ", targetColumns.Zip(otherColumns, (t, o) => $"{alias}.{Quote(t)} = {Quote(other.Qualifier)}.{Quote(o)}"));
+        return new($"{target.Name} {alias} ON {on}", CompletionKind.Join, $"{Quote(target.Schema)}.{Quote(target.Name)} {alias} ON {on}", fkName);
+    }
+
+    /// <summary>Lower-case initials of the words in a name ("OrderLines" → "ol"), made unique among <paramref name="used"/>.</summary>
+    internal static string MakeAlias(string name, ISet<string> used)
+    {
+        var initials = new System.Text.StringBuilder();
+        for (var i = 0; i < name.Length; i++)
+        {
+            var c = name[i];
+            if (!char.IsLetter(c)) continue;
+            var wordStart = i == 0 || !char.IsLetterOrDigit(name[i - 1]) || (char.IsUpper(c) && char.IsLower(name[i - 1]));
+            if (wordStart) initials.Append(char.ToLowerInvariant(c));
+        }
+        var baseAlias = initials.Length > 0 ? initials.ToString() : "t";
+        var alias = baseAlias;
+        for (var n = 2; used.Contains(alias) || SqlKeywords.Keywords.Contains(alias); n++) alias = baseAlias + n;
+        return alias;
+    }
+
+    private static IEnumerable<CompletionItem> MemberItems(string qualifier, string? outer, List<TableReference> refs, SchemaInfo scope, int caret, Context context)
+    {
+        var target = outer == null ? SqlAnalysis.ResolveQualifier(refs, qualifier, caret)?.Object : null;
+        var isSchema = outer == null && scope.Schemas.Contains(qualifier, StringComparer.OrdinalIgnoreCase);
+        if (target == null && !isSchema) target = scope.Find(outer, qualifier);
+        if (target != null)
+            return target.Columns.Select(c => Column(c, target.Name));
+
+        return scope.Objects
+            .Where(o => o.Schema.Equals(qualifier, StringComparison.OrdinalIgnoreCase))
+            .Where(o => context switch
+            {
+                Context.Table => o.IsTableLike,
+                Context.Procedure => o.Kind == SchemaObjectKind.Procedure,
+                _ => true,
+            })
+            .Select(o => new CompletionItem(o.Name, KindOf(o), Quote(o.Name), o.KindLabel));
+    }
+
+    private static IEnumerable<CompletionItem> Variables(string text, List<SqlToken> tokens, string prefix) =>
+        tokens
             .Where(t => t.Kind == SqlTokenKind.Variable)
             .Select(t => t.Text(text))
             .Where(v => !v.Equals(prefix, StringComparison.Ordinal) && !v.StartsWith("@@"))
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(v => new CompletionItem(v, CompletionKind.Variable, v, "variable"));
+            .Select(v => new CompletionItem(v, CompletionKind.Variable, v, SqlAnalysis.VariableType(text, tokens, v) ?? "variable"));
 
-    /// <summary>Objects named after FROM/JOIN/UPDATE/INTO/APPLY, with their aliases.</summary>
-    internal static List<(SchemaObject Object, string? Alias)> ReferencedObjects(string text, SchemaInfo schema)
-    {
-        var tokens = SqlTokenizer.Tokenize(text).Where(t => t.Kind != SqlTokenKind.Comment).ToList();
-        var result = new List<(SchemaObject, string?)>();
-        for (var i = 0; i < tokens.Count; i++)
-        {
-            var word = tokens[i].Kind == SqlTokenKind.Keyword ? tokens[i].Text(text).ToUpperInvariant() : "";
-            var isList = tokens[i].Kind == SqlTokenKind.Operator && text[tokens[i].Start] == ',' && InFromClause(tokens, i, text);
-            if (word is not ("FROM" or "JOIN" or "UPDATE" or "INTO" or "APPLY") && !isList) continue;
+    private static CompletionItem Column(SchemaColumn col, string table) =>
+        new(col.Name, CompletionKind.Column, Quote(col.Name), col.Type.Length > 0 ? $"{col.Type} · {table}" : table);
 
-            var j = i + 1;
-            if (!IsName(tokens, j)) continue;
-            string? schemaName = null;
-            var name = tokens[j].Text(text);
-            j++;
-            while (j + 1 < tokens.Count && text[tokens[j].Start] == '.' && tokens[j].Length == 1 && IsName(tokens, j + 1))
-            {
-                schemaName = name;
-                name = tokens[j + 1].Text(text);
-                j += 2;
-            }
-            if (schema.Find(schemaName, name) is not { } obj) continue;
+    private static CompletionItem Object(SchemaObject obj) =>
+        obj.Kind == SchemaObjectKind.Local
+            ? new(obj.Name, CompletionKind.Local, obj.Name.StartsWith('#') || obj.Name.StartsWith('@') ? obj.Name : Quote(obj.Name), obj.KindLabel)
+            : new(obj.Name, KindOf(obj), $"{Quote(obj.Schema)}.{Quote(obj.Name)}", obj.Schema);
 
-            string? alias = null;
-            if (j < tokens.Count && tokens[j].Kind == SqlTokenKind.Keyword && tokens[j].Text(text).Equals("AS", StringComparison.OrdinalIgnoreCase)) j++;
-            if (IsName(tokens, j)) alias = SchemaInfo.Unquote(tokens[j].Text(text));
-            result.Add((obj, alias));
-        }
-        return result;
-    }
-
-    private static bool InFromClause(List<SqlToken> tokens, int i, string text)
-    {
-        for (var j = i - 1; j >= 0; j--)
-        {
-            if (tokens[j].Kind != SqlTokenKind.Keyword) continue;
-            var w = tokens[j].Text(text).ToUpperInvariant();
-            if (w is "FROM" or "JOIN") return true;
-            if (w is "SELECT" or "WHERE" or "ON" or "SET" or "BY" or "VALUES" or "GROUP" or "ORDER" or "HAVING") return false;
-        }
-        return false;
-    }
-
-    private static bool IsName(List<SqlToken> tokens, int i) =>
-        i < tokens.Count && tokens[i].Kind is SqlTokenKind.Identifier or SqlTokenKind.QuotedIdentifier;
-
-    private static string? ReadQualifier(string text, int dot)
+    private static string? ReadQualifier(string text, int dot, out int start)
     {
         var end = dot;
-        var start = end;
+        start = end;
         if (start > 0 && text[start - 1] == ']')
         {
             start--;
             while (start > 0 && text[start - 1] != '[') start--;
             if (start == 0) return null;
-            return text[start..(end - 1)];
+            start--;
+            return text[(start + 1)..(end - 1)];
         }
         while (start > 0 && SqlTokenizer.IsIdentPart(text[start - 1])) start--;
         return start < end ? text[start..end] : null;
     }
 
-    private static bool InsideCommentOrString(string text, int caret)
-    {
-        foreach (var t in SqlTokenizer.Tokenize(text))
-        {
-            if (t.Start >= caret) break;
-            if (t.Kind is SqlTokenKind.Comment or SqlTokenKind.String && caret > t.Start && (caret < t.End || !IsClosed(text, t)))
-                return true;
-        }
-        return false;
-    }
-
-    private static bool IsClosed(string text, SqlToken t)
-    {
-        var s = t.Text(text);
-        return t.Kind == SqlTokenKind.String
-            ? s.Length >= 2 && s.EndsWith('\'') && !(s.Length == 2 && s[0] is 'N' or 'n')
-            : !s.StartsWith("--") && s.EndsWith("*/");
-    }
-
-    private static List<CompletionItem> Filter(IEnumerable<CompletionItem> items, string prefix) =>
+    private static List<CompletionItem> Filter(IEnumerable<CompletionItem> items, string prefix, Context context) =>
         items
             .Where(i => prefix.Length == 0 || i.Label.Contains(prefix, StringComparison.OrdinalIgnoreCase))
-            .DistinctBy(i => (i.Label.ToUpperInvariant(), i.Kind, i.Detail))
+            .DistinctBy(i => (i.Label.ToUpperInvariant(), i.Kind))
             .OrderBy(i => i.Label.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-            .ThenBy(i => Rank(i.Kind))
+            .ThenBy(i => Rank(i.Kind, context))
             .ThenBy(i => i.Label, StringComparer.OrdinalIgnoreCase)
             .Take(MaxItems)
             .ToList();
 
-    private static int Rank(CompletionKind kind) => kind switch
+    private static int Rank(CompletionKind kind, Context context) => (context, kind) switch
     {
-        CompletionKind.Column or CompletionKind.Variable => 0,
-        CompletionKind.Table or CompletionKind.View => 1,
-        CompletionKind.Schema => 2,
-        CompletionKind.Procedure or CompletionKind.Function => 3,
-        _ => 4,
+        (_, CompletionKind.Join) => 0,
+        (Context.Table, CompletionKind.Local or CompletionKind.Table or CompletionKind.View) => 1,
+        (Context.Table, CompletionKind.Function) => 2,
+        (_, CompletionKind.Column or CompletionKind.Variable) => 1,
+        (_, CompletionKind.Local) => 2,
+        (_, CompletionKind.Function) => 3,
+        (_, CompletionKind.Keyword) => 4,
+        (_, CompletionKind.Table or CompletionKind.View) => 5,
+        (_, CompletionKind.Schema) => 6,
+        _ => 7,
     };
 
     private static CompletionKind KindOf(SchemaObject o) => o.Kind switch
     {
-        SchemaObjectKind.Table => CompletionKind.Table,
+        SchemaObjectKind.Table or SchemaObjectKind.Synonym => CompletionKind.Table,
         SchemaObjectKind.View => CompletionKind.View,
         SchemaObjectKind.Procedure => CompletionKind.Procedure,
+        SchemaObjectKind.Local => CompletionKind.Local,
         _ => CompletionKind.Function,
     };
 

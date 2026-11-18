@@ -95,32 +95,103 @@ public sealed class QuerySession : IAsyncDisposable
         return result;
     }
 
-    /// <summary>Loads table/view/column names of the current database for autocomplete.</summary>
+    /// <summary>Loads objects, typed columns, routine parameters and foreign keys of the current database for IntelliSense.</summary>
     public async Task<SchemaInfo> LoadSchemaAsync(CancellationToken ct)
     {
         await OpenAsync(ct);
         const string sql = """
-            SELECT s.name, o.name, o.type, c.name
+            SELECT s.name, o.name, o.type, c.name, t.name, c.max_length, c.precision, c.scale,
+                   c.is_nullable, c.is_identity, c.is_computed, CAST(CASE WHEN pk.column_id IS NULL THEN 0 ELSE 1 END AS bit)
             FROM sys.objects o
             JOIN sys.schemas s ON s.schema_id = o.schema_id
             LEFT JOIN sys.columns c ON c.object_id = o.object_id
-            WHERE o.type IN ('U', 'V', 'P', 'FN', 'IF', 'TF') AND o.is_ms_shipped = 0
-            ORDER BY s.name, o.name, c.column_id
+            LEFT JOIN sys.types t ON t.user_type_id = c.user_type_id
+            LEFT JOIN (SELECT ic.object_id, ic.column_id
+                       FROM sys.indexes i
+                       JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+                       WHERE i.is_primary_key = 1) pk ON pk.object_id = c.object_id AND pk.column_id = c.column_id
+            WHERE o.type IN ('U', 'V', 'P', 'PC', 'FN', 'FS', 'IF', 'TF', 'FT', 'SN', 'ET') AND o.is_ms_shipped = 0
+            ORDER BY s.name, o.name, c.column_id;
+
+            SELECT s.name, o.name, p.name, t.name, p.max_length, p.precision, p.scale, p.is_output, p.has_default_value, p.parameter_id
+            FROM sys.parameters p
+            JOIN sys.objects o ON o.object_id = p.object_id
+            JOIN sys.schemas s ON s.schema_id = o.schema_id
+            JOIN sys.types t ON t.user_type_id = p.user_type_id
+            WHERE o.is_ms_shipped = 0
+            ORDER BY s.name, o.name, p.parameter_id;
+
+            SELECT fk.name, fs.name, ft.name, fc.name, rs.name, rt.name, rc.name
+            FROM sys.foreign_keys fk
+            JOIN sys.foreign_key_columns k ON k.constraint_object_id = fk.object_id
+            JOIN sys.objects ft ON ft.object_id = fk.parent_object_id
+            JOIN sys.schemas fs ON fs.schema_id = ft.schema_id
+            JOIN sys.columns fc ON fc.object_id = k.parent_object_id AND fc.column_id = k.parent_column_id
+            JOIN sys.objects rt ON rt.object_id = fk.referenced_object_id
+            JOIN sys.schemas rs ON rs.schema_id = rt.schema_id
+            JOIN sys.columns rc ON rc.object_id = k.referenced_object_id AND rc.column_id = k.referenced_column_id
+            ORDER BY fk.object_id, k.constraint_column_id;
             """;
         await using var cmd = new SqlCommand(sql, _connection) { CommandTimeout = 60 };
         await using var r = await cmd.ExecuteReaderAsync(ct);
-        var objects = new Dictionary<(string, string), SchemaObject>();
+
+        var order = new List<(string, string)>();
+        var kinds = new Dictionary<(string, string), SchemaObjectKind>();
+        var columns = new Dictionary<(string, string), List<SchemaColumn>>();
         while (await r.ReadAsync(ct))
         {
             var key = (r.GetString(0), r.GetString(1));
-            if (!objects.TryGetValue(key, out var obj))
+            if (!kinds.ContainsKey(key))
             {
-                obj = new SchemaObject(key.Item1, key.Item2, SchemaInfo.KindFromType(r.GetString(2).Trim()), new List<string>());
-                objects[key] = obj;
+                order.Add(key);
+                kinds[key] = SchemaInfo.KindFromType(r.GetString(2));
+                columns[key] = new();
             }
-            if (!r.IsDBNull(3)) ((List<string>)obj.Columns).Add(r.GetString(3));
+            if (r.IsDBNull(3)) continue;
+            var type = r.IsDBNull(4) ? "" : SchemaInfo.FormatType(r.GetString(4), r.GetInt16(5), r.GetByte(6), r.GetByte(7));
+            columns[key].Add(new SchemaColumn(r.GetString(3), type, r.GetBoolean(8), r.GetBoolean(11), r.GetBoolean(9), r.GetBoolean(10)));
         }
-        return new SchemaInfo(objects.Values.ToList());
+
+        var parameters = new Dictionary<(string, string), List<SchemaParameter>>();
+        var returnTypes = new Dictionary<(string, string), string>();
+        await r.NextResultAsync(ct);
+        while (await r.ReadAsync(ct))
+        {
+            var key = (r.GetString(0), r.GetString(1));
+            var type = SchemaInfo.FormatType(r.GetString(3), r.GetInt16(4), r.GetByte(5), r.GetByte(6));
+            if (r.GetInt32(9) == 0)
+            {
+                returnTypes[key] = type;
+                continue;
+            }
+            if (!parameters.TryGetValue(key, out var list)) parameters[key] = list = new();
+            list.Add(new SchemaParameter(r.GetString(2), type, r.GetBoolean(7), r.GetBoolean(8)));
+        }
+
+        var foreignKeys = new List<ForeignKey>();
+        await r.NextResultAsync(ct);
+        string? current = null;
+        List<string> fromCols = new(), toCols = new();
+        while (await r.ReadAsync(ct))
+        {
+            var name = r.GetString(0);
+            if (name != current || foreignKeys.Count == 0 || foreignKeys[^1].FromTable != r.GetString(2))
+            {
+                current = name;
+                fromCols = new();
+                toCols = new();
+                foreignKeys.Add(new ForeignKey(name, r.GetString(1), r.GetString(2), fromCols, r.GetString(4), r.GetString(5), toCols));
+            }
+            fromCols.Add(r.GetString(3));
+            toCols.Add(r.GetString(6));
+        }
+
+        var objects = order.Select(key => new SchemaObject(key.Item1, key.Item2, kinds[key], columns[key])
+        {
+            Parameters = parameters.TryGetValue(key, out var p) ? p : [],
+            ReturnType = returnTypes.GetValueOrDefault(key),
+        }).ToList();
+        return new SchemaInfo(objects, foreignKeys);
     }
 
     public async Task<QueryResult> ExecuteAsync(string script, int lineOffset, CancellationToken ct)

@@ -9,7 +9,7 @@ using WinUIEditor;
 
 namespace Sqlzilla.Views;
 
-public enum EditorCommand { Execute, Save, ToggleResults }
+public enum EditorCommand { Execute, Save, ToggleResults, Docs }
 
 /// <summary>
 /// Native Scintilla code editor (WinUIEdit) with T-SQL highlighting. Offsets exposed to callers are UTF-16 offsets into LF-normalised <see cref="Text"/>.
@@ -46,7 +46,7 @@ public sealed partial class CodeEditor : UserControl
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(0, 1, 1, 1),
-            Child = new Grid { Children = { _control, _placeholderBlock, CreateFindBar() } },
+            Child = new Grid { Children = { _control, _placeholderBlock, CreateOverlay(), CreateFindBar() } },
         };
         HorizontalAlignment = HorizontalAlignment.Stretch;
         VerticalAlignment = VerticalAlignment.Stretch;
@@ -126,6 +126,7 @@ public sealed partial class CodeEditor : UserControl
         e.AutoCSelection -= OnAutoCSelection;
         e.AutoCCharDeleted -= OnAutoCCharDeleted;
         e.StyleNeeded -= OnStyleNeeded;
+        CloseIntellisense();
         _control.SyntaxHighlightingApplied -= OnSyntaxHighlightingApplied;
         _control.DefaultColorsChanged -= OnDefaultColorsChanged;
         _control.Loaded -= OnControlLoaded;
@@ -135,8 +136,6 @@ public sealed partial class CodeEditor : UserControl
     }
 
     private Editor Editor => _control.Editor;
-
-    private int CaretOffset => (int)Editor.CountCodeUnits(0, Editor.CurrentPos);
 
     private static string Normalize(string? text) => (text ?? "").Replace("\r\n", "\n").Replace('\r', '\n');
 
@@ -166,6 +165,7 @@ public sealed partial class CodeEditor : UserControl
         _control.SyntaxHighlightingApplied += OnSyntaxHighlightingApplied;
         _control.DefaultColorsChanged += OnDefaultColorsChanged;
         InitFindIndicator();
+        InitIntellisense();
         // Unknown to WinUIEdit → container lexer, styled by StyleSql.
         _control.HighlightingLanguage = "tsql";
         ApplyStyles();
@@ -278,6 +278,7 @@ public sealed partial class CodeEditor : UserControl
         _text = null;
         _version++;
         QueueFindRefresh();
+        OnModifiedIntellisense();
         if (_hostEdit) return;
         UpdatePlaceholder();
         TextChanged?.Invoke(this, EventArgs.Empty);
@@ -304,6 +305,7 @@ public sealed partial class CodeEditor : UserControl
             VirtualKey.F5 when !ctrl && !shift && !alt => EditorCommand.Execute,
             VirtualKey.S when ctrl && !shift && !alt => EditorCommand.Save,
             VirtualKey.R when ctrl && !shift && !alt => EditorCommand.ToggleResults,
+            VirtualKey.F1 when !ctrl && !shift && !alt => EditorCommand.Docs,
             _ => null,
         };
         if (command != null)
@@ -316,10 +318,21 @@ public sealed partial class CodeEditor : UserControl
         {
             e.Handled = true;
         }
-        else if (e.Key == VirtualKey.Space && ctrl && !shift && !alt && _findBox.FocusState == FocusState.Unfocused)
+        else if (e.Key == VirtualKey.Space && ctrl && !alt && _findBox.FocusState == FocusState.Unfocused)
         {
             e.Handled = true;
-            _ = ShowCompletionsAsync(true);
+            if (shift) _ = ShowSignatureAsync();
+            else _ = ShowCompletionsAsync(true);
+        }
+        else if (e.Key == VirtualKey.Escape && !Editor.AutoCActive() && (SignatureVisible || _hoverPopup.Visibility == Visibility.Visible))
+        {
+            e.Handled = true;
+            HideSignature();
+            HideHover();
+        }
+        else
+        {
+            HideHover();
         }
     }
 
@@ -329,6 +342,7 @@ public sealed partial class CodeEditor : UserControl
     private void OnCharAdded(Editor sender, CharAddedEventArgs args)
     {
         var c = (char)args.Ch;
+        if (c is '(' or ',' || (c == ')' && SignatureVisible) || (c == ' ' && AfterExecName())) QueueSignatureUpdate();
         if (char.IsLetterOrDigit(c) || c == '_' || CompletionTriggers.Contains(c)) _ = ShowCompletionsAsync(false);
         else if (Editor.AutoCActive()) Editor.AutoCCancel();
     }

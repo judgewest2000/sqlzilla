@@ -42,6 +42,10 @@ public sealed partial class QueryTab : UserControl
 
         Editor.CompletionSource = (text, caret, explicitRequest) =>
             Task.Run(() => SqlCompletionProvider.Complete(text, caret, _schema, explicitRequest));
+        Editor.SignatureSource = (text, caret) => Task.Run(() => SqlSignatureHelp.Get(text, caret, _schema));
+        Editor.QuickInfoSource = (text, offset) => Task.Run(() => SqlQuickInfo.Get(text, offset, _schema));
+        Editor.DiagnosticsSource = text => Task.Run(() => SqlDiagnostics.Analyze(text, _schema));
+        Editor.CaretMoved += (_, _) => QueueDocsFollow();
         Editor.CommandInvoked += OnEditorCommand;
         Editor.TextChanged += (_, _) => StateChanged?.Invoke(this, EventArgs.Empty);
         _clock.Tick += (_, _) => ElapsedText.Text = FormatElapsed(DateTime.UtcNow - _runStarted);
@@ -161,6 +165,55 @@ public sealed partial class QueryTab : UserControl
         try { _schema = await _session.LoadSchemaAsync(CancellationToken.None); }
         catch { _schema = SchemaInfo.Empty; }   // autocomplete is best-effort (e.g. no VIEW DEFINITION)
         finally { _gate.Release(); }
+        if (_closed) return;
+        DocsPanel.Schema = _schema;
+        Editor.RefreshDiagnostics();
+    }
+
+    // ------------------------------------------------------------------ schema docs (F1)
+
+    private const double DocsMinWidth = 260;
+    private GridLength _docsWidth = new(360);
+    private bool _docsFollowQueued;
+
+    private bool DocsOpen => DocsPanel.Visibility == Visibility.Visible;
+
+    private void SetDocsOpen(bool open)
+    {
+        if (open == DocsOpen) return;
+        if (!open && DocsColumn.ActualWidth > 0) _docsWidth = DocsColumn.Width;
+        DocsPanel.Visibility = DocsSplitter.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        DocsColumn.MinWidth = open ? DocsMinWidth : 0;
+        DocsColumn.Width = open ? _docsWidth : new GridLength(0);
+    }
+
+    private void DocsPanel_CloseRequested(object? sender, EventArgs e)
+    {
+        SetDocsOpen(false);
+        Editor.FocusEditor();
+    }
+
+    private async Task ShowDocsAtCaretAsync(bool pushHistory)
+    {
+        var text = Editor.Text;
+        var caret = Editor.CaretOffset;
+        var schema = _schema;
+        var target = await Task.Run(() => SqlQuickInfo.Target(text, caret, schema));
+        if (_closed) return;
+        if (pushHistory) SetDocsOpen(true);
+        if (target != null) DocsPanel.ShowTarget(target, pushHistory);
+    }
+
+    // Live "follow cursor" while the docs panel is open.
+    private void QueueDocsFollow()
+    {
+        if (!DocsOpen || _docsFollowQueued) return;
+        _docsFollowQueued = true;
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+        {
+            _docsFollowQueued = false;
+            if (DocsOpen) _ = ShowDocsAtCaretAsync(pushHistory: false);
+        });
     }
 
     private async void DatabaseBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -196,6 +249,7 @@ public sealed partial class QueryTab : UserControl
             case EditorCommand.Execute: _ = ExecuteAsync(); break;
             case EditorCommand.Save: _ = SaveAsync(false); break;
             case EditorCommand.ToggleResults: ToggleResults(); break;
+            case EditorCommand.Docs: _ = ShowDocsAtCaretAsync(pushHistory: true); break;
         }
     }
 

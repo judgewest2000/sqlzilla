@@ -60,6 +60,8 @@ public sealed partial class CompletionRow : Grid
             CompletionKind.Procedure => ("\uE768", 0xB180D7, false),
             CompletionKind.Function => ("\uE945", 0xB180D7, false),
             CompletionKind.Variable => ("@", 0x75BEFF, true),
+            CompletionKind.Join => ("\uE71B", 0x4EC9B0, false),
+            CompletionKind.Local => ("\uE8FD", 0x4EC9B0, false),
             _ => ("\uE943", 0xC5C5C5, false),
         };
         _icon.Text = glyph;

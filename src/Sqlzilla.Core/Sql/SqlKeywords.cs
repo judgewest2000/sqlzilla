@@ -36,10 +36,11 @@ public static class SqlKeywords
         "SPACE STDEV STRING_AGG STRING_SPLIT STR STUFF SUBSTRING SUM SUSER_NAME SUSER_SNAME SYSDATETIME SYSDATETIMEOFFSET " +
         "SYSUTCDATETIME TRANSLATE TRIM TRY_CAST TRY_CONVERT TRY_PARSE UPPER USER_NAME VAR YEAR");
 
-    /// <summary>Keywords offered by autocomplete (upper case).</summary>
+    /// <summary>Keywords offered by autocomplete (upper case); built-in functions are offered separately by <see cref="SqlBuiltins"/>.</summary>
     public static readonly string[] CompletionKeywords = Keywords
         .Concat(Functions)
         .Select(k => k.ToUpperInvariant())
+        .Where(k => !SqlBuiltins.All.ContainsKey(k))
         .Distinct()
         .Order(StringComparer.Ordinal)
         .ToArray();

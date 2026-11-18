@@ -59,7 +59,16 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" MinHeight="0" />
             </Grid.RowDefinitions>
-            <views:CodeEditor x:Name="Editor" Placeholder="-- Write T-SQL here. F5 or Ctrl+Enter runs the selection or the whole script." />
+            <Grid x:Name="EditorArea">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" MinWidth="200" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition x:Name="DocsColumn" Width="0" />
+                </Grid.ColumnDefinitions>
+                <views:CodeEditor x:Name="Editor" Placeholder="-- Write T-SQL here. F5 or Ctrl+Enter runs the selection or the whole script. F1 shows schema docs." />
+                <views:PaneSplitter x:Name="DocsSplitter" Grid.Column="1" Target="2" Visibility="Collapsed" ToolTipService.ToolTip="Drag to resize · double-click to reset" />
+                <views:SchemaDocsPanel x:Name="DocsPanel" Grid.Column="2" Visibility="Collapsed" CloseRequested="DocsPanel_CloseRequested" />
+            </Grid>
             <views:PaneSplitter x:Name="Splitter" Grid.Row="1" IsHorizontal="True" Target="0" ToolTipService.ToolTip="Drag to resize · double-click to reset" />
             <Grid x:Name="ResultsPane" Grid.Row="2" RowSpacing="4">
                 <Grid.RowDefinitions>
