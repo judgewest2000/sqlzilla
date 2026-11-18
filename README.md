@@ -41,10 +41,15 @@ Use Windows Settings > Apps, or run the one-liner above with `-Uninstall`.
   - Runs `GO` batches.
   - Executes the selection only, if there is one.
   - Cancel a running query.
-  - Copy results or save them as CSV. Click the grid's top-left corner to select every row, like Excel.
+  - Copy results or save them as CSV.
+- **Results grid**: selection works like Excel.
+  - Drag a box over cells, or click or drag row numbers and column headers. Shift extends the selection, Ctrl adds ranges, and the top-left corner selects everything.
+  - Arrow keys, Ctrl+arrows, PageUp/PageDown and Home/End move the selection.
+  - Ctrl+C copies the selection (Ctrl+Shift+C includes headers).
+  - Drag a header edge to resize a column, including the row-number column. Double-click the edge to auto-fit.
 - **IntelliSense**: uses the schema of the connected database.
   - Context-aware completion: tables after `FROM`, columns via aliases (`o.`), procedures after `EXEC`, `@variables` and `#temp` tables.
-  - Join suggestions built from foreign keys, e.g. `JOIN dbo.Customers c ON c.CustomerId = o.CustomerId`.
+  - Join suggestions built from foreign keys, e.g. `JOIN Customers c ON c.CustomerId = o.CustomerId`. Objects in `dbo` are inserted without the schema prefix; other schemas keep it.
   - Understands CTEs, temp tables, table variables, `SELECT INTO` and derived tables.
   - Signature help for built-in functions, user functions and stored procedure parameters.
   - Hover for column types, keys and foreign keys, and object or function details.

@@ -56,7 +56,9 @@ public class SqlCompletionProviderTests
     public void InsertTextQuotesAwkwardNames()
     {
         var item = SqlCompletionProvider.Complete("SELECT * FROM Order", 19, Schema, false).Items.First(i => i.Label == "Order Lines");
-        Assert.Equal("dbo.[Order Lines]", item.InsertText);
+        Assert.Equal("[Order Lines]", item.InsertText);
+        var other = SqlCompletionProvider.Complete("SELECT * FROM Ord", 17, Schema, false).Items.First(i => i.Label == "Orders" && i.Detail == "sales");
+        Assert.Equal("sales.Orders", other.InsertText);
     }
 
     [Fact]
@@ -89,14 +91,14 @@ public class SqlCompletionProviderTests
     {
         var items = ShopItems("SELECT * FROM dbo.Orders o JOIN |");
         Assert.Equal(CompletionKind.Join, items[0].Kind);
-        Assert.Contains(items, i => i.InsertText == "dbo.Customers c ON c.CustomerId = o.CustomerId");
-        Assert.Contains(items, i => i.InsertText == "dbo.OrderLines ol ON ol.OrderId = o.OrderId");
+        Assert.Contains(items, i => i.InsertText == "Customers c ON c.CustomerId = o.CustomerId");
+        Assert.Contains(items, i => i.InsertText == "OrderLines ol ON ol.OrderId = o.OrderId");
         Assert.DoesNotContain(items, i => i.Kind is CompletionKind.Keyword or CompletionKind.Column);
     }
 
     [Fact]
     public void JoinAliasAvoidsAliasesInUse() =>
-        Assert.Contains(ShopItems("SELECT * FROM dbo.Orders c JOIN |"), i => i.InsertText == "dbo.Customers c2 ON c2.CustomerId = c.CustomerId");
+        Assert.Contains(ShopItems("SELECT * FROM dbo.Orders c JOIN |"), i => i.InsertText == "Customers c2 ON c2.CustomerId = c.CustomerId");
 
     [Fact]
     public void AfterExecOnlyProcedures() =>

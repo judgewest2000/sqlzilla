@@ -180,7 +180,7 @@ public static class SqlCompletionProvider
     {
         var alias = MakeAlias(target.Name, used);
         var on = string.Join(" AND ", targetColumns.Zip(otherColumns, (t, o) => $"{alias}.{Quote(t)} = {Quote(other.Qualifier)}.{Quote(o)}"));
-        return new($"{target.Name} {alias} ON {on}", CompletionKind.Join, $"{Quote(target.Schema)}.{Quote(target.Name)} {alias} ON {on}", fkName);
+        return new($"{target.Name} {alias} ON {on}", CompletionKind.Join, $"{QualifiedName(target)} {alias} ON {on}", fkName);
     }
 
     /// <summary>Lower-case initials of the words in a name ("OrderLines" → "ol"), made unique among <paramref name="used"/>.</summary>
@@ -233,7 +233,13 @@ public static class SqlCompletionProvider
     private static CompletionItem Object(SchemaObject obj) =>
         obj.Kind == SchemaObjectKind.Local
             ? new(obj.Name, CompletionKind.Local, obj.Name.StartsWith('#') || obj.Name.StartsWith('@') ? obj.Name : Quote(obj.Name), obj.KindLabel)
-            : new(obj.Name, KindOf(obj), $"{Quote(obj.Schema)}.{Quote(obj.Name)}", obj.Schema);
+            : new(obj.Name, KindOf(obj), QualifiedName(obj), obj.Schema);
+
+    /// <summary>dbo objects are inserted bare; other schemas keep their prefix, which SQL Server needs to resolve them.</summary>
+    internal static string QualifiedName(SchemaObject obj) =>
+        string.Equals(obj.Schema, "dbo", StringComparison.OrdinalIgnoreCase) || obj.Schema.Length == 0
+            ? Quote(obj.Name)
+            : $"{Quote(obj.Schema)}.{Quote(obj.Name)}";
 
     private static string? ReadQualifier(string text, int dot, out int start)
     {
