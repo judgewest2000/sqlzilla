@@ -115,14 +115,24 @@ public static class ConnectionFactory
     /// <summary>Databases the login can access, system databases first.</summary>
     public static async Task<List<string>> ListDatabasesAsync(ServerConnection server, bool readOnlyIntent, CancellationToken ct)
     {
-        const string sql = """
-            SELECT name FROM sys.databases
-            WHERE HAS_DBACCESS(name) = 1 AND state = 0
-            ORDER BY CASE WHEN database_id <= 4 THEN 0 ELSE 1 END, name
-            """;
         await using var conn = new SqlConnection(Build(server, readOnlyIntent: readOnlyIntent));
         await conn.OpenAsync(ct);
-        await using var cmd = new SqlCommand(sql, conn);
+        return await ListDatabasesAsync(conn, ct);
+    }
+
+    /// <summary>
+    /// Azure SQL Database (engine edition 5) can't evaluate HAS_DBACCESS for other databases from master, which would
+    /// hide everything except master; there, sys.databases is already limited to what the login can see.
+    /// </summary>
+    private const string ListDatabasesSql = """
+        SELECT name FROM sys.databases
+        WHERE state = 0 AND (HAS_DBACCESS(name) = 1 OR CAST(SERVERPROPERTY('EngineEdition') AS int) = 5)
+        ORDER BY CASE WHEN database_id <= 4 THEN 0 ELSE 1 END, name
+        """;
+
+    internal static async Task<List<string>> ListDatabasesAsync(SqlConnection conn, CancellationToken ct)
+    {
+        await using var cmd = new SqlCommand(ListDatabasesSql, conn);
         await using var r = await cmd.ExecuteReaderAsync(ct);
         var result = new List<string>();
         while (await r.ReadAsync(ct)) result.Add(r.GetString(0));

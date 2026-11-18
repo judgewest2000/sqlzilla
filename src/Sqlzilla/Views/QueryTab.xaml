@@ -76,10 +76,10 @@
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
                 <SelectorBar x:Name="ResultTabs" SelectionChanged="ResultTabs_SelectionChanged">
-                    <SelectorBarItem x:Name="ResultsTabItem" Text="Results" Icon="ViewAll" Visibility="Collapsed" />
-                    <SelectorBarItem x:Name="MessagesTabItem" Text="Messages" Icon="Message" IsSelected="True" />
+                    <SelectorBarItem x:Name="ResultsTabItem" Text="Results"                     Icon="ViewAll" IsSelected="True" />
+                                        <SelectorBarItem x:Name="MessagesTabItem" Text="Messages" Icon="Message" />
                 </SelectorBar>
-                <Grid x:Name="ResultsHost" Grid.Row="1" Visibility="Collapsed" />
+                                    <Grid x:Name="ResultsHost" Grid.Row="1" />
                 <Border x:Name="MessagesHost" Grid.Row="1" CornerRadius="4" BorderThickness="1"
                         BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" Background="{ThemeResource LayerFillColorDefaultBrush}">
                     <ScrollViewer x:Name="MessagesScroll" HorizontalScrollBarVisibility="Auto" HorizontalScrollMode="Auto" Padding="10,8">

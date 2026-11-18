@@ -41,7 +41,7 @@ Use Windows Settings > Apps, or run the one-liner above with `-Uninstall`.
   - Runs `GO` batches.
   - Executes the selection only, if there is one.
   - Cancel a running query.
-  - Copy results or save them as CSV.
+  - Copy results or save them as CSV. Click the grid's top-left corner to select every row, like Excel.
 - **IntelliSense**: uses the schema of the connected database.
   - Context-aware completion: tables after `FROM`, columns via aliases (`o.`), procedures after `EXEC`, `@variables` and `#temp` tables.
   - Join suggestions built from foreign keys, e.g. `JOIN dbo.Customers c ON c.CustomerId = o.CustomerId`.
@@ -65,6 +65,7 @@ Like Notepad++, open tabs are remembered between runs in `%LOCALAPPDATA%\Sqlzill
 | Ctrl+W | Close tab |
 | Ctrl+R | Show or hide results |
 | Ctrl+F | Find |
+| Ctrl+/ | Comment or uncomment the selected lines |
 | Ctrl+Space | Show completions |
 | Ctrl+Shift+Space | Show parameter info |
 | F1 | Schema docs for the item under the caret |

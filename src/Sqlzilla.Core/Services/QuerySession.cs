@@ -87,12 +87,7 @@ public sealed class QuerySession : IAsyncDisposable
     public async Task<List<string>> ListDatabasesAsync(CancellationToken ct)
     {
         await OpenAsync(ct);
-        const string sql = "SELECT name FROM sys.databases WHERE HAS_DBACCESS(name) = 1 AND state = 0 ORDER BY CASE WHEN database_id <= 4 THEN 0 ELSE 1 END, name";
-        await using var cmd = new SqlCommand(sql, _connection);
-        await using var r = await cmd.ExecuteReaderAsync(ct);
-        var result = new List<string>();
-        while (await r.ReadAsync(ct)) result.Add(r.GetString(0));
-        return result;
+        return await ConnectionFactory.ListDatabasesAsync(_connection!, ct);
     }
 
     /// <summary>Loads objects, typed columns, routine parameters and foreign keys of the current database for IntelliSense.</summary>

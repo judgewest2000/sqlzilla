@@ -318,6 +318,11 @@ public sealed partial class CodeEditor : UserControl
         {
             e.Handled = true;
         }
+        else if (ctrl && !shift && !alt && e.Key is (VirtualKey)191 or VirtualKey.Divide)
+        {
+            e.Handled = true;
+            ToggleLineComments();
+        }
         else if (e.Key == VirtualKey.Space && ctrl && !alt && _findBox.FocusState == FocusState.Unfocused)
         {
             e.Handled = true;
@@ -397,6 +402,47 @@ public sealed partial class CodeEditor : UserControl
                 new Windows.Foundation.Point(0, Editor.PointYFromPosition(Editor.CurrentPos) / XamlRoot.RasterizationScale)).Y;
             if (popup.VerticalOffset < caretTop) popup.VerticalOffset += excess;   // shown above the caret: keep it attached
             list.Height = fitted;
+        }
+    }
+
+    /// <summary>Ctrl+/ like VS Code: toggles <c>--</c> on every line the selection touches, as one undo step.</summary>
+    private void ToggleLineComments()
+    {
+        var e = Editor;
+        e.AutoCCancel();
+        var selStart = e.SelectionStart;
+        var selEnd = e.SelectionEnd;
+        var first = e.LineFromPosition(selStart);
+        var last = e.LineFromPosition(selEnd);
+        // A selection ending at the very start of a line doesn't include that line.
+        if (last > first && e.PositionFromLine(last) == selEnd) last--;
+
+        var startPos = e.PositionFromLine(first);
+        var endPos = e.GetLineEndPosition(last);
+        var raw = e.GetText(e.Length) ?? "";
+        var startChar = (int)e.CountCodeUnits(0, startPos);
+        var endChar = (int)e.CountCodeUnits(0, endPos);
+        var block = raw[startChar..endChar];
+        var eol = block.Contains("\r\n") ? "\r\n" : "\n";
+        var toggled = string.Join(eol, SqlComment.ToggleLines(block.Split(eol)));
+        if (toggled == block) return;
+
+        e.BeginUndoAction();
+        e.SetTargetRange(startPos, endPos);
+        e.ReplaceTarget(-1, toggled);
+        e.EndUndoAction();
+
+        var newEnd = e.PositionRelativeCodeUnits(startPos, toggled.Length);
+        if (first == last && selStart == selEnd)
+        {
+            // Keep the caret on the same text it was next to.
+            var caretChar = (int)e.CountCodeUnits(startPos, selStart) + (toggled.Length - block.Length);
+            var caret = e.PositionRelativeCodeUnits(startPos, Math.Clamp(caretChar, 0, toggled.Length));
+            e.SetSel(caret, caret);
+        }
+        else
+        {
+            e.SetSel(startPos, newEnd);
         }
     }
 

@@ -24,7 +24,7 @@ public sealed partial class ResultGrid : UserControl
     private const string RowTemplateXaml =
         "<DataTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"><StackPanel Orientation=\"Horizontal\" /></DataTemplate>";
 
-    private static readonly FontFamily CellFont = new("Segoe UI");
+    private static readonly FontFamily CellFont = new("Consolas");
 
     private readonly ResultSet _set;
     private readonly double[] _widths;
@@ -121,16 +121,18 @@ public sealed partial class ResultGrid : UserControl
             .Take(5);
 
         var name = set.Columns[column].Name.Length > 0 ? set.Columns[column].Name : "(No column name)";
-        var widest = Measure(name, Microsoft.UI.Text.FontWeights.SemiBold) + 8;
+        var widest = Measure(name, Microsoft.UI.Text.FontWeights.SemiBold, null) + 8;
         foreach (var value in candidates)
-            widest = Math.Max(widest, Measure(value, Microsoft.UI.Text.FontWeights.Normal));
+            widest = Math.Max(widest, Measure(value, Microsoft.UI.Text.FontWeights.Normal, CellFont));
         return Math.Clamp(widest + 14, MinColumnWidth, MaxAutoColumnWidth);
     }
 
     private static readonly TextBlock Ruler = new();
 
-    private static double Measure(string text, Windows.UI.Text.FontWeight weight)
+    private static double Measure(string text, Windows.UI.Text.FontWeight weight, FontFamily? font)
     {
+        if (font != null) Ruler.FontFamily = font;
+        else Ruler.ClearValue(TextBlock.FontFamilyProperty);
         Ruler.Text = text;
         Ruler.FontWeight = weight;
         Ruler.Measure(new Windows.Foundation.Size(double.PositiveInfinity, double.PositiveInfinity));
@@ -155,7 +157,7 @@ public sealed partial class ResultGrid : UserControl
     private void BuildHeader()
     {
         _header.Children.Clear();
-        _header.Children.Add(new Border { Width = RowNumberWidth, BorderBrush = _gridLine, BorderThickness = new Thickness(0, 0, 1, 1) });
+        _header.Children.Add(CreateSelectAllCorner());
         for (var i = 0; i < _set.Columns.Count; i++)
         {
             var column = _set.Columns[i];
@@ -174,6 +176,38 @@ public sealed partial class ResultGrid : UserControl
             cell.Children.Add(CreateResizeGrip(i));
             _header.Children.Add(cell);
         }
+    }
+
+    private UIElement CreateSelectAllCorner()
+    {
+        // Excel-style corner: a small triangle in the bottom-right that selects every row.
+        var triangle = new Microsoft.UI.Xaml.Shapes.Polygon
+        {
+            Points = { new Windows.Foundation.Point(10, 0), new Windows.Foundation.Point(10, 10), new Windows.Foundation.Point(0, 10) },
+            Fill = _rowNumberBrush,
+            Opacity = 0.6,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 4, 4),
+        };
+        var corner = new Border
+        {
+            Width = RowNumberWidth,
+            BorderBrush = _gridLine,
+            BorderThickness = new Thickness(0, 0, 1, 1),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            Child = triangle,
+        };
+        ToolTipService.SetToolTip(corner, "Select all (Ctrl+A)");
+        corner.PointerEntered += (_, _) => triangle.Opacity = 1;
+        corner.PointerExited += (_, _) => triangle.Opacity = 0.6;
+        corner.Tapped += (_, e) =>
+        {
+            SelectAll();
+            _list.Focus(FocusState.Pointer);
+            e.Handled = true;
+        };
+        return corner;
     }
 
     private UIElement CreateResizeGrip(int column)
@@ -317,7 +351,10 @@ public sealed partial class ResultGrid : UserControl
 
     public void CopySelection(bool withHeaders) => CopyText(ResultExport.ToTsv(_set.Columns, SelectedRows(), withHeaders));
 
-    public void SelectAll() => _list.SelectRange(new ItemIndexRange(0, (uint)_set.Rows.Count));
+    public void SelectAll()
+    {
+        if (_set.Rows.Count > 0) _list.SelectRange(new ItemIndexRange(0, (uint)_set.Rows.Count));
+    }
 
     private void OnListKeyDown(object sender, KeyRoutedEventArgs e)
     {

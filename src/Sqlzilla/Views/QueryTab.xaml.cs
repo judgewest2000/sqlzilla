@@ -123,7 +123,7 @@ public sealed partial class QueryTab : UserControl
         {
             if (_closed) return;
             SetState("Not connected.", "\uE783");
-            ShowMessages([new QueryMessage(MessageKind.Error, ex.Message)]);
+            ShowError(ex.Message);
         }
         finally
         {
@@ -227,7 +227,7 @@ public sealed partial class QueryTab : UserControl
         }
         catch (Exception ex)
         {
-            ShowMessages([new QueryMessage(MessageKind.Error, ex.Message)]);
+            ShowError(ex.Message);
         }
         finally { _gate.Release(); }
         UpdateConnectionInfo();
@@ -360,7 +360,7 @@ public sealed partial class QueryTab : UserControl
 
         if (result.ResultSets.Count == 0)
         {
-            ResultsTabItem.Visibility = Visibility.Collapsed;
+            ResultsTabItem.Text = "Results";
             ResultTabs.SelectedItem = MessagesTabItem;
             UpdateResultTabs();
             return;
@@ -396,8 +396,7 @@ public sealed partial class QueryTab : UserControl
         }
 
         ResultsTabItem.Text = grids.Count == 1 ? "Results" : $"Results ({grids.Count})";
-        ResultsTabItem.Visibility = Visibility.Visible;
-        ResultTabs.SelectedItem = result.HasErrors ? MessagesTabItem : ResultsTabItem;
+        ResultTabs.SelectedItem = ResultsTabItem;
         UpdateResultTabs();
     }
 
@@ -407,6 +406,13 @@ public sealed partial class QueryTab : UserControl
         ScrollViewer { Content: StackPanel s } => s.Children.OfType<ResultGrid>(),
         _ => [],
     };
+
+    private void ShowError(string message)
+    {
+        ShowMessages([new QueryMessage(MessageKind.Error, message)]);
+        ResultTabs.SelectedItem = MessagesTabItem;
+        UpdateResultTabs();
+    }
 
     private void ShowMessages(IEnumerable<QueryMessage> messages)
     {
@@ -446,7 +452,7 @@ public sealed partial class QueryTab : UserControl
             MessagesText.Blocks.Add(paragraph);
         }
         MessagesScroll.ChangeView(0, 0, null, true);
-        if (ResultsTabItem.Visibility == Visibility.Collapsed) ResultTabs.SelectedItem = MessagesTabItem;
+        if (ResultsHost.Children.Count == 0) ResultTabs.SelectedItem = MessagesTabItem;
         UpdateResultTabs();
     }
 
@@ -454,7 +460,7 @@ public sealed partial class QueryTab : UserControl
 
     private void UpdateResultTabs()
     {
-        var showResults = ResultTabs.SelectedItem == ResultsTabItem && ResultsTabItem.Visibility == Visibility.Visible;
+        var showResults = ResultTabs.SelectedItem != MessagesTabItem;
         ResultsHost.Visibility = showResults ? Visibility.Visible : Visibility.Collapsed;
         MessagesHost.Visibility = showResults ? Visibility.Collapsed : Visibility.Visible;
     }
