@@ -77,7 +77,7 @@ public sealed partial class ResultGrid : UserControl
         _header = new StackPanel { Orientation = Orientation.Horizontal, Height = RowHeight + 2, Background = _headerBackground };
         _header.PointerPressed += OnHeaderPointerPressed;
         _header.PointerMoved += OnDragPointerMoved;
-        _header.PointerReleased += (_, _) => EndDrag();
+        _header.PointerReleased += OnPointerReleased;
         _header.PointerCaptureLost += (_, _) => EndDrag();
         _header.RightTapped += OnRightTapped;
         _headerScroll = new ScrollViewer
@@ -128,7 +128,7 @@ public sealed partial class ResultGrid : UserControl
         _scroll.ViewChanged += (_, _) => _headerScroll.ChangeView(_scroll.HorizontalOffset, null, null, true);
         _scroll.AddHandler(PointerPressedEvent, new PointerEventHandler(OnCellsPointerPressed), true);
         _scroll.AddHandler(PointerMovedEvent, new PointerEventHandler(OnDragPointerMoved), true);
-        _scroll.AddHandler(PointerReleasedEvent, new PointerEventHandler((_, _) => EndDrag()), true);
+        _scroll.AddHandler(PointerReleasedEvent, new PointerEventHandler(OnPointerReleased), true);
         _scroll.PointerCaptureLost += (_, _) => EndDrag();
         _scroll.RightTapped += OnRightTapped;
 
@@ -477,7 +477,7 @@ public sealed partial class ResultGrid : UserControl
         var point = e.GetCurrentPoint(_scroll);
         // Leave the scroll bars alone.
         if (point.Position.X >= _scroll.ViewportWidth || point.Position.Y >= _scroll.ViewportHeight) return;
-        Focus(FocusState.Pointer);
+        ClaimFocus();
 
         var (row, column) = HitTest(point.Position);
         var mode = column < 0 ? DragMode.Rows : DragMode.Cells;
@@ -501,7 +501,7 @@ public sealed partial class ResultGrid : UserControl
     {
         if (_set.Columns.Count == 0) return;
         var point = e.GetCurrentPoint(_header);
-        Focus(FocusState.Pointer);
+        ClaimFocus();
         var column = ColumnAt(point.Position.X);
         if (column < 0)
         {
@@ -576,6 +576,15 @@ public sealed partial class ResultGrid : UserControl
 
     // ------------------------------------------------------------------ keyboard
 
+    private void ClaimFocus() => Focus(FocusState.Pointer);
+
+    private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        EndDrag();
+        // An unhandled release lets the window's root ScrollViewer take focus, so Ctrl+C after a single click would
+        // go nowhere (WinUIEdit does the same for the editor).
+        if (e.GetCurrentPoint(_scroll).Properties.PointerUpdateKind == Microsoft.UI.Input.PointerUpdateKind.LeftButtonReleased) e.Handled = true;
+    }
     private void OnGridKeyDown(object sender, KeyRoutedEventArgs e)
     {
         var ctrl = IsDown(VirtualKey.Control);
