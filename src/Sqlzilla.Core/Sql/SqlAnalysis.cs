@@ -43,7 +43,11 @@ internal static class SqlAnalysis
         {
             if (t.Start >= caret) break;
             if (t.Kind is SqlTokenKind.Comment or SqlTokenKind.String && caret > t.Start && (caret < t.End || !IsClosed(text, t)))
+            {
+                // A line comment ends at the newline, so the caret is only inside it up to the end of that line.
+                if (text.AsSpan(t.Start).StartsWith("--") && caret > t.End) continue;
                 return true;
+            }
         }
         return false;
     }

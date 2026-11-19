@@ -28,6 +28,7 @@ public sealed partial class CodeEditor : UserControl
     private bool _closed;
     private int _version;
     private Dictionary<string, CompletionItem> _shownItems = new();
+    private long _replaceStartPos;   // where an accepted completion starts replacing (may be before Scintilla's word start, e.g. a '[')
 
     public CodeEditor()
     {
@@ -126,6 +127,7 @@ public sealed partial class CodeEditor : UserControl
         e.AutoCSelection -= OnAutoCSelection;
         e.AutoCCharDeleted -= OnAutoCCharDeleted;
         e.StyleNeeded -= OnStyleNeeded;
+        e.ZoomChanged -= OnZoomChanged;
         CloseIntellisense();
         _control.SyntaxHighlightingApplied -= OnSyntaxHighlightingApplied;
         _control.DefaultColorsChanged -= OnDefaultColorsChanged;
@@ -161,6 +163,7 @@ public sealed partial class CodeEditor : UserControl
         e.AutoCSelection += OnAutoCSelection;
         e.AutoCCharDeleted += OnAutoCCharDeleted;
         e.StyleNeeded += OnStyleNeeded;
+        e.ZoomChanged += OnZoomChanged;
 
         _control.SyntaxHighlightingApplied += OnSyntaxHighlightingApplied;
         _control.DefaultColorsChanged += OnDefaultColorsChanged;
@@ -176,6 +179,8 @@ public sealed partial class CodeEditor : UserControl
     private void OnAutoCCharDeleted(Editor sender, object args) => _ = ShowCompletionsAsync(false);
 
     private void OnStyleNeeded(Editor sender, StyleNeededEventArgs args) => StyleSql();
+
+    private void OnZoomChanged(Editor sender, ZoomChangedEventArgs args) => DispatcherQueue.TryEnqueue(UpdatePlaceholder);
 
     private void OnSyntaxHighlightingApplied(object? sender, ElementTheme args) => ApplyStyles();
 
@@ -288,6 +293,8 @@ public sealed partial class CodeEditor : UserControl
     {
         _placeholderBlock.Visibility = Editor.Length == 0 && !string.IsNullOrEmpty(_placeholderBlock.Text) ? Visibility.Visible : Visibility.Collapsed;
         if (_placeholderBlock.Visibility == Visibility.Collapsed || XamlRoot == null) return;
+        // Match the editor's font size, which Ctrl+wheel zoom changes by whole points.
+        _placeholderBlock.FontSize = Math.Max(2, FontPoints + Editor.Zoom) * 96.0 / 72;
         var px = 0;
         for (var m = 0; m < 5; m++) px += Editor.GetMarginWidthN(m);
         _placeholderBlock.Margin = new Thickness((px + 4) / XamlRoot.RasterizationScale, 1, 4, 0);
@@ -381,7 +388,10 @@ public sealed partial class CodeEditor : UserControl
 
         var start = Math.Clamp(result.ReplaceStart, 0, offset);
         var startPos = e.PositionRelativeCodeUnits(0, start);
-        e.AutoCShow(e.CurrentPos - startPos, string.Join(ListSeparator, lines));
+        _replaceStartPos = startPos;
+        // Scintilla matches the typed text against labels, which never start with '[', so leave an opening bracket out.
+        var matchPos = start < offset && text[start] == '[' ? startPos + 1 : startPos;
+        e.AutoCShow(e.CurrentPos - matchPos, string.Join(ListSeparator, lines));
         DispatcherQueue.TryEnqueue(() => FitCompletionPopup(lines.Count));
     }
 
@@ -451,7 +461,7 @@ public sealed partial class CodeEditor : UserControl
         if (!_shownItems.TryGetValue(args.Text, out var item)) return;
         var e = Editor;
         e.AutoCCancel();   // stop Scintilla inserting the display text; insert the real text instead
-        var start = args.Position;
+        var start = Math.Min(_replaceStartPos, args.Position);
         var end = e.CurrentPos;
         e.SetTargetRange(start, end);
         e.ReplaceTarget(-1, item.InsertText);

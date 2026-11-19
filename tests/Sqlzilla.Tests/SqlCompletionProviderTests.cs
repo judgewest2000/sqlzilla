@@ -43,7 +43,20 @@ public class SqlCompletionProviderTests
     {
         Assert.Empty(Labels("SELECT 'Cust|'"));
         Assert.Empty(Labels("-- Cust|"));
+        Assert.Empty(Labels("SELECT 1\n-- Cust|\nSELECT 2"));
     }
+
+    [Fact]
+    public void CompletesAfterLineComment() =>
+        Assert.Contains("Customers", Labels("SELECT 1;\n\n--note\n\nSELECT * FROM Cu|\n"));
+
+    [Theory]
+    [InlineData("SELECT * FROM [Cu|")]
+    [InlineData("SELECT * FROM [Cu|\n")]
+    [InlineData("SELECT * FROM [Order Lines];\nSELECT * FROM [Cu|\n")]
+    [InlineData("SELECT * FROM [Cu|\nSELECT * FROM [Order Lines]")]
+    public void CompletesOpenBracketedName(string text) =>
+        Assert.Contains("Customers", Labels(text));
 
     [Fact]
     public void NoSuggestionsWithoutPrefixUnlessRequested()
