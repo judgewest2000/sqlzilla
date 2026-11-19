@@ -7,10 +7,10 @@ public static class ResultExport
     /// <summary>Tab-separated text for pasting into Excel etc. NULLs are written as "NULL", like SSMS.</summary>
     public static string ToTsv(IReadOnlyList<ResultColumn> columns, IEnumerable<string?[]> rows, bool includeHeaders)
     {
-        var sb = new StringBuilder();
-        if (includeHeaders) sb.AppendJoin('\t', columns.Select(c => Flatten(c.Name))).Append("\r\n");
-        foreach (var row in rows) sb.AppendJoin('\t', row.Select(v => Flatten(v ?? "NULL"))).Append("\r\n");
-        return sb.ToString();
+        // No trailing newline, so pasting a single cell gives just its value (as SSMS does).
+        var lines = rows.Select(row => string.Join('\t', row.Select(v => Flatten(v ?? "NULL"))));
+        if (includeHeaders) lines = lines.Prepend(string.Join('\t', columns.Select(c => Flatten(c.Name))));
+        return string.Join("\r\n", lines);
     }
 
     /// <summary>RFC 4180 CSV; NULLs become empty fields.</summary>

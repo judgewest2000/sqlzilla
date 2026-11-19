@@ -126,6 +126,7 @@ public class ResultFormattingTests
     public void TsvWritesNullAndFlattensNewlines()
     {
         var tsv = ResultExport.ToTsv([new("a", "int")], [[null], ["x\ny"]], includeHeaders: false);
-        Assert.Equal("NULL\r\nx y\r\n", tsv);
+        Assert.Equal("NULL\r\nx y", tsv);
+        Assert.Equal("a\r\n42", ResultExport.ToTsv([new("a", "int")], [["42"]], includeHeaders: true));
     }
 }
