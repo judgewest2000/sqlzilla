@@ -22,6 +22,10 @@ public sealed partial class QueryTab : UserControl
     private readonly QuerySession _session;
     private readonly SemaphoreSlim _gate = new(1, 1);   // one command at a time on the session's connection
     private readonly DispatcherTimer _clock = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly DispatcherTimer _resultsTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
+    private readonly List<ResultGrid> _grids = new();
+    private StackPanel? _stack;   // holds the grids when there are too many to share the height
+    private QueryResult? _live;   // the executing query's result, filled in the background
     private string _untitledName;
     private CancellationTokenSource? _runCts;
     private SchemaInfo _schema = SchemaInfo.Empty;
@@ -49,6 +53,7 @@ public sealed partial class QueryTab : UserControl
         Editor.CommandInvoked += OnEditorCommand;
         Editor.TextChanged += (_, _) => StateChanged?.Invoke(this, EventArgs.Empty);
         _clock.Tick += (_, _) => ElapsedText.Text = FormatElapsed(DateTime.UtcNow - _runStarted);
+        _resultsTimer.Tick += (_, _) => { if (_live is { } live) PumpResults(live); };
 
         ServerText.Text = server.ResolvedServer;
         ApplyGroup();
@@ -295,38 +300,41 @@ public sealed partial class QueryTab : UserControl
         SetBusy(true, "Executing query…");
         StateChanged?.Invoke(this, EventArgs.Empty);
 
-        QueryResult result;
+        var result = _live = new QueryResult();
+        _resultsTimer.Start();
         await _gate.WaitAsync();
         try
         {
-            result = await Task.Run(() => _session.ExecuteAsync(script, lineOffset, cts.Token));
+            await Task.Run(() => _session.ExecuteAsync(result, script, lineOffset, cts.Token));
         }
         catch (Exception ex)
         {
-            result = new QueryResult { HasErrors = true, Elapsed = DateTime.UtcNow - _runStarted };
-            result.Messages.Add(new QueryMessage(MessageKind.Error, ex.Message));
+            result.HasErrors = true;
+            result.Elapsed = DateTime.UtcNow - _runStarted;
+            result.AddMessage(new QueryMessage(MessageKind.Error, ex.Message));
         }
         finally
         {
             _gate.Release();
+            _resultsTimer.Stop();
+            _live = null;
         }
-
         _runCts = null;
         cts.Dispose();
         _clock.Stop();
         if (_closed) return;
 
+        PumpResults(result);
         ExecuteButton.IsEnabled = true;
         CancelButton.IsEnabled = false;
         DatabaseBox.IsEnabled = true;
         SetBusy(false);
         ElapsedText.Text = FormatElapsed(result.Elapsed);
-        RowsText.Text = result.TotalRows == 1 ? "1 row" : $"{result.TotalRows:N0} rows";
         if (result.Cancelled) SetState("Query cancelled.", "\uE711");
         else if (result.HasErrors) SetState("Query completed with errors.", "\uE783");
         else SetState("Query executed successfully.", "\uE73E");
 
-        ShowResult(result);
+        ShowMessages(result.Messages);
         var databaseBefore = DatabaseBox.SelectedItem as string;
         UpdateConnectionInfo();
         if (databaseBefore != _session.Database || !_session.IsOpen) await LoadSchemaAsync();
@@ -351,9 +359,67 @@ public sealed partial class QueryTab : UserControl
 
     // ------------------------------------------------------------------ results
 
+    /// <summary>Adds result sets and rows that arrived since the last call, so results appear while the query runs.</summary>
+    private void PumpResults(QueryResult result)
+    {
+        if (_closed) return;
+        var sets = result.SnapshotResultSets();
+        var first = _grids.Count == 0 && sets.Count > 0;
+        for (var i = _grids.Count; i < sets.Count; i++) AddGrid(new ResultGrid(sets[i]));
+        foreach (var grid in _grids) grid.Refresh();
+        if (_stack != null) SizeStackedGrids();
+        if (sets.Count > 0) ResultsTabItem.Text = sets.Count == 1 ? "Results" : $"Results ({sets.Count})";
+        if (first)
+        {
+            ResultTabs.SelectedItem = ResultsTabItem;
+            UpdateResultTabs();
+        }
+        var rows = _grids.Sum(g => g.ResultSet.Rows.Count);
+        RowsText.Text = rows == 1 ? "1 row" : $"{rows:N0} rows";
+    }
+
+    private void AddGrid(ResultGrid grid)
+    {
+        grid.SaveCsvRequested += OnSaveCsvRequested;
+        _grids.Add(grid);
+        if (_grids.Count <= 3)
+        {
+            // Share the height, like SSMS.
+            ResultsHost.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 80 });
+            grid.Margin = new Thickness(0, _grids.Count == 1 ? 0 : 6, 0, 0);
+            Grid.SetRow(grid, _grids.Count - 1);
+            ResultsHost.Children.Add(grid);
+            return;
+        }
+        if (_stack == null)
+        {
+            // Too many to share the height: switch to a scrolling stack.
+            ResultsHost.Children.Clear();
+            ResultsHost.RowDefinitions.Clear();
+            _stack = new StackPanel { Spacing = 6 };
+            foreach (var g in _grids)
+            {
+                g.Margin = new Thickness(0);
+                Grid.SetRow(g, 0);
+                _stack.Children.Add(g);
+            }
+            ResultsHost.Children.Add(new ScrollViewer { Content = _stack, Padding = new Thickness(0, 0, 12, 0) });
+        }
+        else _stack.Children.Add(grid);
+    }
+
+    private void SizeStackedGrids()
+    {
+        foreach (var g in _grids)
+            g.Height = Math.Min(300, 32 + Math.Max(1, g.ResultSet.Rows.Count) * 24 + 20 + (g.ResultSet.Truncated ? 24 : 0));
+    }
+
     private void RemoveGrids()
     {
-        foreach (var grid in ResultsHost.Children.OfType<FrameworkElement>().SelectMany(Grids)) grid.SaveCsvRequested -= OnSaveCsvRequested;
+        foreach (var grid in _grids) grid.SaveCsvRequested -= OnSaveCsvRequested;
+        _grids.Clear();
+        _stack?.Children.Clear();
+        _stack = null;
         ResultsHost.Children.Clear();
         ResultsHost.RowDefinitions.Clear();
     }
@@ -366,62 +432,6 @@ public sealed partial class QueryTab : UserControl
         ResultsTabItem.Text = "Results";
         RowsText.Text = "0 rows";
     }
-
-    private void ShowResult(QueryResult result)
-    {
-        RemoveGrids();
-
-        ShowMessages(result.Messages);
-
-        if (result.ResultSets.Count == 0)
-        {
-            ResultsTabItem.Text = "Results";
-            ResultTabs.SelectedItem = MessagesTabItem;
-            UpdateResultTabs();
-            return;
-        }
-
-        var grids = result.ResultSets.Select(set =>
-        {
-            var grid = new ResultGrid(set);
-            grid.SaveCsvRequested += OnSaveCsvRequested;
-            return grid;
-        }).ToList();
-
-        if (grids.Count <= 3)
-        {
-            // Share the height, like SSMS.
-            for (var i = 0; i < grids.Count; i++)
-            {
-                ResultsHost.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 80 });
-                grids[i].Margin = new Thickness(0, i == 0 ? 0 : 6, 0, 0);
-                Grid.SetRow(grids[i], i);
-                ResultsHost.Children.Add(grids[i]);
-            }
-        }
-        else
-        {
-            var stack = new StackPanel { Spacing = 6 };
-            foreach (var g in grids)
-            {
-                g.Height = Math.Min(300, 32 + Math.Max(1, g.ResultSet.Rows.Count) * 24 + 20);
-                stack.Children.Add(g);
-            }
-            ResultsHost.Children.Add(new ScrollViewer { Content = stack, Padding = new Thickness(0, 0, 12, 0) });
-        }
-
-        ResultsTabItem.Text = grids.Count == 1 ? "Results" : $"Results ({grids.Count})";
-        ResultTabs.SelectedItem = ResultsTabItem;
-        UpdateResultTabs();
-    }
-
-    private static IEnumerable<ResultGrid> Grids(FrameworkElement e) => e switch
-    {
-        ResultGrid g => [g],
-        ScrollViewer { Content: StackPanel s } => s.Children.OfType<ResultGrid>(),
-        _ => [],
-    };
-
     private void ShowError(string message)
     {
         ShowMessages([new QueryMessage(MessageKind.Error, message)]);
@@ -646,6 +656,7 @@ public sealed partial class QueryTab : UserControl
         _closed = true;
         _runCts?.Cancel();
         _clock.Stop();
+        _resultsTimer.Stop();
         Editor.Close();
         RemoveGrids();
         _ = Task.Run(async () =>

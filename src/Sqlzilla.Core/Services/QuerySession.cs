@@ -8,14 +8,54 @@ namespace Sqlzilla.Services;
 
 public sealed record ResultColumn(string Name, string TypeName);
 
+/// <summary>
+/// One result set, filled while the query is still running. The reader appends rows to a pending buffer;
+/// <see cref="Commit"/> moves them into <see cref="Rows"/>, so the consumer's thread is the only one that touches it.
+/// </summary>
 public sealed class ResultSet
 {
+    private readonly object _pendingLock = new();
+    private List<string?[]> _pending = new();
+    private int _received;
+    private volatile bool _truncated;
+    private volatile bool _complete;
+
     public required IReadOnlyList<ResultColumn> Columns { get; init; }
 
-    /// <summary>Cell text, or null for SQL NULL.</summary>
+    /// <summary>Committed rows: cell text, or null for SQL NULL.</summary>
     public List<string?[]> Rows { get; } = new();
 
-    public bool Truncated { get; set; }
+    /// <summary>The set reached <see cref="QuerySession.MaxRowsPerResultSet"/> and later rows were discarded.</summary>
+    public bool Truncated => _truncated;
+
+    /// <summary>The reader has moved past this set; no more rows will arrive.</summary>
+    public bool IsComplete => _complete;
+
+    internal bool IsFull => _received >= QuerySession.MaxRowsPerResultSet;
+
+    internal void MarkTruncated() => _truncated = true;
+
+    internal void MarkComplete() => _complete = true;
+
+    internal void Add(string?[] row)
+    {
+        _received++;
+        lock (_pendingLock) _pending.Add(row);
+    }
+
+    /// <summary>Moves rows received since the last call into <see cref="Rows"/> and returns how many. Call from one thread only.</summary>
+    public int Commit()
+    {
+        List<string?[]> batch;
+        lock (_pendingLock)
+        {
+            if (_pending.Count == 0) return 0;
+            batch = _pending;
+            _pending = new();
+        }
+        Rows.AddRange(batch);
+        return batch.Count;
+    }
 }
 
 public enum MessageKind { Info, Error, Success }
@@ -24,8 +64,28 @@ public sealed record QueryMessage(MessageKind Kind, string Text);
 
 public sealed class QueryResult
 {
+    /// <summary>Only safe to enumerate once execution has finished; use <see cref="SnapshotResultSets"/> while it runs.</summary>
     public List<ResultSet> ResultSets { get; } = new();
     public List<QueryMessage> Messages { get; } = new();
+
+    public IReadOnlyList<ResultSet> SnapshotResultSets()
+    {
+        lock (ResultSets) return ResultSets.ToList();
+    }
+
+    internal int AddResultSet(ResultSet set)
+    {
+        lock (ResultSets)
+        {
+            ResultSets.Add(set);
+            return ResultSets.Count;
+        }
+    }
+
+    public void AddMessage(QueryMessage message)
+    {
+        lock (Messages) Messages.Add(message);
+    }
     public bool HasErrors { get; set; }
     public bool Cancelled { get; set; }
     public TimeSpan Elapsed { get; set; }
@@ -192,6 +252,17 @@ public sealed class QuerySession : IAsyncDisposable
     public async Task<QueryResult> ExecuteAsync(string script, int lineOffset, CancellationToken ct)
     {
         var result = new QueryResult();
+        await ExecuteAsync(result, script, lineOffset, ct);
+        foreach (var set in result.ResultSets) set.Commit();
+        return result;
+    }
+
+    /// <summary>
+    /// Runs the script, streaming into <paramref name="result"/>: while it runs, poll
+    /// <see cref="QueryResult.SnapshotResultSets"/> and <see cref="ResultSet.Commit"/> to show rows as they arrive.
+    /// </summary>
+    public async Task ExecuteAsync(QueryResult result, string script, int lineOffset, CancellationToken ct)
+    {
         var watch = Stopwatch.StartNew();
         try
         {
@@ -202,7 +273,7 @@ public sealed class QuerySession : IAsyncDisposable
             result.HasErrors = true;
             result.Messages.Add(new(MessageKind.Error, ex.Message));
             result.Elapsed = watch.Elapsed;
-            return result;
+            return;
         }
 
         _current = result;
@@ -240,7 +311,6 @@ public sealed class QuerySession : IAsyncDisposable
         if (!result.HasErrors && !result.Cancelled)
             result.Messages.Add(new(MessageKind.Success, "Commands completed successfully."));
         result.Messages.Add(new(MessageKind.Info, $"Completion time: {DateTimeOffset.Now:yyyy-MM-ddTHH:mm:ss.fffffffzzz}"));
-        return result;
     }
 
     private async Task ExecuteBatchAsync(string sql, QueryResult result, CancellationToken ct)
@@ -256,22 +326,29 @@ public sealed class QuerySession : IAsyncDisposable
             {
                 if (reader.FieldCount == 0) continue;
                 var set = new ResultSet { Columns = ReadColumns(reader) };
-                result.ResultSets.Add(set);
+                var number = result.AddResultSet(set);
                 var values = new object[reader.FieldCount];
-                while (await reader.ReadAsync(ct))
+                try
                 {
-                    if (set.Rows.Count >= MaxRowsPerResultSet)
+                    while (await reader.ReadAsync(ct))
                     {
-                        set.Truncated = true;
-                        continue;   // keep draining so following result sets and messages arrive
+                        if (set.IsFull)
+                        {
+                            set.MarkTruncated();
+                            continue;   // keep draining so following result sets and messages arrive
+                        }
+                        reader.GetValues(values);
+                        var row = new string?[values.Length];
+                        for (var c = 0; c < values.Length; c++) row[c] = Format(values[c]);
+                        set.Add(row);
                     }
-                    reader.GetValues(values);
-                    var row = new string?[values.Length];
-                    for (var c = 0; c < values.Length; c++) row[c] = Format(values[c]);
-                    set.Rows.Add(row);
+                }
+                finally
+                {
+                    set.MarkComplete();
                 }
                 if (set.Truncated)
-                    AddMessage(result, new(MessageKind.Info, $"Result set {result.ResultSets.Count} was limited to the first {MaxRowsPerResultSet:N0} rows."));
+                    AddMessage(result, new(MessageKind.Info, $"Result set {number} was limited to the first {MaxRowsPerResultSet:N0} rows."));
             }
             while (await reader.NextResultAsync(ct));
         }

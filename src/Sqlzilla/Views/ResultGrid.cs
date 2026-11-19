@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Collections.Specialized;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -23,6 +25,7 @@ public sealed partial class ResultGrid : UserControl
     private const double MinColumnWidth = 48;
     private const double MaxAutoColumnWidth = 420;
     private const double GripWidth = 6;
+    private const int AutoSizeSampleRows = 300;
     private const string RowTemplateXaml =
         "<DataTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"><StackPanel Orientation=\"Horizontal\" /></DataTemplate>";
 
@@ -31,8 +34,11 @@ public sealed partial class ResultGrid : UserControl
     private enum DragMode { None, Cells, Rows, Columns }
 
     private readonly ResultSet _set;
+    private readonly RowSource _rows;
     private readonly double[] _widths;
     private double _rowNumberWidth;
+    private readonly HashSet<int> _manuallySized = new();   // column indexes; -1 is the row-number column
+    private readonly TextBlock _truncatedNote;
 
     private readonly StackPanel _header;
     private readonly ScrollViewer _headerScroll;
@@ -91,9 +97,10 @@ public sealed partial class ResultGrid : UserControl
         };
         BuildHeader();
 
+        _rows = new RowSource(set.Rows);
         _repeater = new ItemsRepeater
         {
-            ItemsSource = set.Rows,
+            ItemsSource = _rows,
             ItemTemplate = (DataTemplate)XamlReader.Load(RowTemplateXaml),
             Layout = new StackLayout { Orientation = Orientation.Vertical },
             HorizontalAlignment = HorizontalAlignment.Left,
@@ -136,34 +143,60 @@ public sealed partial class ResultGrid : UserControl
         KeyDown += OnGridKeyDown;
         Unloaded += (_, _) => _autoScroll.Stop();
 
-        var root = new Grid
+        var box = new Grid
         {
             BorderBrush = _gridLine,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(4),
             Background = Res("LayerFillColorDefaultBrush"),
         };
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        if (set.Truncated)
-        {
-            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var note = new TextBlock
-            {
-                Text = $"Showing the first {set.Rows.Count:N0} rows; the rest were discarded.",
-                Margin = new Thickness(8, 4, 8, 4),
-                Foreground = Res("SystemFillColorCautionBrush"),
-            };
-            Grid.SetRow(note, 2);
-            root.Children.Add(note);
-        }
+        box.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        box.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         Grid.SetRow(_scroll, 1);
-        root.Children.Add(_headerScroll);
-        root.Children.Add(_scroll);
+        box.Children.Add(_headerScroll);
+        box.Children.Add(_scroll);
+
+        // Outside the box: with hundreds of thousands of rows the scroll viewer stops clipping its content to the
+        // viewport, so rows spill to the bottom of the box (whose rounded corners do clip) and would cover the note.
+        _truncatedNote = new TextBlock
+        {
+            Text = $"Showing the first {QuerySession.MaxRowsPerResultSet:N0} rows; the rest were discarded.",
+            Margin = new Thickness(8, 4, 8, 0),
+            Foreground = Res("SystemFillColorCautionBrush"),
+            Visibility = Visibility.Collapsed,
+        };
+        var root = new Grid();
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(_truncatedNote, 1);
+        root.Children.Add(box);
+        root.Children.Add(_truncatedNote);
         Content = root;
+        Refresh();
     }
 
     public ResultSet ResultSet => _set;
+
+    /// <summary>
+    /// Shows rows that arrived since the last call (the query may still be running) and returns how many there were.
+    /// Columns keep widening to fit until the first <see cref="AutoSizeSampleRows"/> rows are in, unless resized by hand.
+    /// </summary>
+    public int Refresh()
+    {
+        var start = _set.Rows.Count;
+        var added = _set.Commit();
+        if (added > 0)
+        {
+            _rows.NotifyAppended(start, added);
+            if (start < AutoSizeSampleRows)
+                for (var c = 0; c < _widths.Length; c++)
+                    if (!_manuallySized.Contains(c) && AutoWidth(_set, c) is var w && w > _widths[c]) SetColumnWidth(c, w);
+            if (!_manuallySized.Contains(-1) && RowNumberAutoWidth(_set) is var rn && rn > _rowNumberWidth) SetColumnWidth(-1, rn);
+            UpdateContentSize();
+        }
+        if (_set.Truncated) _truncatedNote.Visibility = Visibility.Visible;
+        return added;
+    }
 
     /// <summary>Raised from the context menu; the host shows the file picker (it owns the window handle).</summary>
     public event EventHandler? SaveCsvRequested;
@@ -175,7 +208,7 @@ public sealed partial class ResultGrid : UserControl
     private static double AutoWidth(ResultSet set, int column)
     {
         // Measure the few longest sample values for real rather than trusting character counts.
-        var candidates = Enumerable.Range(0, Math.Min(set.Rows.Count, 300))
+        var candidates = Enumerable.Range(0, Math.Min(set.Rows.Count, AutoSizeSampleRows))
             .Select(r => set.Rows[r][column] ?? "NULL")
             .Select(v => v.Length > 200 ? v[..200] : v)
             .Distinct()
@@ -292,6 +325,7 @@ public sealed partial class ResultGrid : UserControl
         grip.PointerPressed += (_, e) =>
         {
             dragging = grip.CapturePointer(e.Pointer);
+            _manuallySized.Add(column);
             startX = e.GetCurrentPoint(this).Position.X;
             startWidth = column < 0 ? _rowNumberWidth : _widths[column];
             e.Handled = true;
@@ -677,5 +711,38 @@ public sealed partial class ResultGrid : UserControl
         Add("Select all", "\uE8B3", SelectAll, "Ctrl+A");
         Add("Save as CSV…", "\uE74E", () => SaveCsvRequested?.Invoke(this, EventArgs.Empty));
         menu.ShowAt(this, new FlyoutShowOptions { Position = e.GetPosition(this) });
+    }
+
+    /// <summary>
+    /// Read-only view of the committed rows that tells the ItemsRepeater when a batch is appended,
+    /// so the grid grows while the query streams.
+    /// </summary>
+    private sealed partial class RowSource(List<string?[]> rows) : IList, INotifyCollectionChanged
+    {
+        public event NotifyCollectionChangedEventHandler? CollectionChanged;
+
+        public void NotifyAppended(int start, int count) =>
+            CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Add, rows.GetRange(start, count), start));
+
+        public object? this[int index]
+        {
+            get => rows[index];
+            set => throw new NotSupportedException();
+        }
+
+        public int Count => rows.Count;
+        public bool IsReadOnly => true;
+        public bool IsFixedSize => false;
+        public bool IsSynchronized => false;
+        public object SyncRoot => this;
+        public bool Contains(object? value) => IndexOf(value) >= 0;
+        public int IndexOf(object? value) => value is string?[] row ? rows.IndexOf(row) : -1;
+        public void CopyTo(Array array, int index) => ((ICollection)rows).CopyTo(array, index);
+        public IEnumerator GetEnumerator() => rows.GetEnumerator();
+        public int Add(object? value) => throw new NotSupportedException();
+        public void Clear() => throw new NotSupportedException();
+        public void Insert(int index, object? value) => throw new NotSupportedException();
+        public void Remove(object? value) => throw new NotSupportedException();
+        public void RemoveAt(int index) => throw new NotSupportedException();
     }
 }
