@@ -291,6 +291,7 @@ public sealed partial class QueryTab : UserControl
         _runStarted = DateTime.UtcNow;
         ElapsedText.Text = FormatElapsed(TimeSpan.Zero);
         _clock.Start();
+        ClearResults();
         SetBusy(true, "Executing query…");
         StateChanged?.Invoke(this, EventArgs.Empty);
 
@@ -350,11 +351,25 @@ public sealed partial class QueryTab : UserControl
 
     // ------------------------------------------------------------------ results
 
-    private void ShowResult(QueryResult result)
+    private void RemoveGrids()
     {
         foreach (var grid in ResultsHost.Children.OfType<FrameworkElement>().SelectMany(Grids)) grid.SaveCsvRequested -= OnSaveCsvRequested;
         ResultsHost.Children.Clear();
         ResultsHost.RowDefinitions.Clear();
+    }
+
+    /// <summary>Blanks the previous run's output so it's obvious a new run is in progress, as SSMS does.</summary>
+    private void ClearResults()
+    {
+        RemoveGrids();
+        MessagesText.Blocks.Clear();
+        ResultsTabItem.Text = "Results";
+        RowsText.Text = "0 rows";
+    }
+
+    private void ShowResult(QueryResult result)
+    {
+        RemoveGrids();
 
         ShowMessages(result.Messages);
 
@@ -632,8 +647,7 @@ public sealed partial class QueryTab : UserControl
         _runCts?.Cancel();
         _clock.Stop();
         Editor.Close();
-        foreach (var grid in ResultsHost.Children.OfType<FrameworkElement>().SelectMany(Grids)) grid.SaveCsvRequested -= OnSaveCsvRequested;
-        ResultsHost.Children.Clear();
+        RemoveGrids();
         _ = Task.Run(async () =>
         {
             await _gate.WaitAsync();

@@ -98,7 +98,8 @@
                     </Button>
                 </Grid>
             </Grid>
-            <views:PaneSplitter Target="0" ShowLine="False" HorizontalAlignment="Right" Canvas.ZIndex="1"
+            <!-- Hangs mostly outside the explorer so it doesn't cover the tree's scrollbar -->
+            <views:PaneSplitter Target="0" ShowLine="False" HorizontalAlignment="Right" Margin="0,0,-8,0" Canvas.ZIndex="1"
                                 ToolTipService.ToolTip="Drag to resize · double-click to reset" />
 
             <!-- Query windows -->

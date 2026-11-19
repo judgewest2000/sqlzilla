@@ -472,7 +472,7 @@ public sealed partial class MainWindow : Window
             Width = 10, Height = 10, CornerRadius = new CornerRadius(5),
             Background = new SolidColorBrush(color), VerticalAlignment = VerticalAlignment.Center,
         });
-        header.Children.Add(new TextBlock { Text = query.Title, MaxWidth = 200, TextTrimming = TextTrimming.CharacterEllipsis });
+        header.Children.Add(new TextBlock { Text = query.Title, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis });
         header.Children.Add(new TextBlock
         {
             Text = query.Database.Length > 0 ? $"{query.Server.DisplayName}.{query.Database}" : query.Server.DisplayName,
