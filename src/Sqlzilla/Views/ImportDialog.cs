@@ -47,7 +47,9 @@ public sealed class ImportDialog
     private readonly Border _previewHost = new() { Height = 220 };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
     private readonly ProgressBar _progress = new() { Visibility = Visibility.Collapsed };
-    private readonly ScrollViewer _scroller = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    private readonly ScrollViewer _scroller = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, AllowDrop = true, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+    private readonly Microsoft.UI.Xaml.Shapes.Rectangle _dropOutline = new() { StrokeThickness = 2, StrokeDashArray = [4, 3], RadiusX = 8, RadiusY = 8 };
+    private readonly TextBlock _dropText = new() { FontSize = 16, HorizontalAlignment = HorizontalAlignment.Center };
 
     private readonly List<ColumnRow> _rows = new();
     private List<SchemaObject> _tables = new();
@@ -103,6 +105,7 @@ public sealed class ImportDialog
 
         var panel = new StackPanel { Spacing = 12, Width = Math.Min(1040, Math.Max(600, root.Size.Width - 160)) };
         panel.Children.Add(Section("File"));
+        panel.Children.Add(BuildDropZone());
         panel.Children.Add(fileRow);
         panel.Children.Add(_options);
         panel.Children.Add(Section($"Destination: {database}"));
@@ -187,12 +190,29 @@ public sealed class ImportDialog
         WinRT.Interop.InitializeWithWindow.Initialize(picker, MainWindow.Handle);
         foreach (var ext in new[] { ".csv", ".txt", ".tsv", ".json", ".jsonl", ".xlsx", ".xls", "*" }) picker.FileTypeFilter.Add(ext);
         var file = await picker.PickSingleFileAsync();
-        if (file == null) return;
+        if (file != null) await LoadFileAsync(file.Path);
+    }
 
-        _file = file.Path;
-        _path.Text = file.Path;
-        _format = ImportReaders.FormatFromPath(file.Path);
-        _tableBox.Text = Path.GetFileNameWithoutExtension(file.Path);
+    private async Task LoadFileAsync(string filePath)
+    {
+        if (_busy) return;
+        var format = ImportReaders.FormatFromPath(filePath);
+        string? problem;
+        try { problem = await Task.Run(() => ImportReaders.CheckFile(filePath, format)); }
+        catch (Exception ex) { problem = $"Couldn't read the file: {ex.Message}"; }
+        if (problem != null)
+        {
+            _file = null;
+            _path.Text = filePath;
+            _options.Visibility = Visibility.Collapsed;
+            Fail($"Can't import {Path.GetFileName(filePath)}: {problem}");
+            return;
+        }
+
+        _file = filePath;
+        _path.Text = filePath;
+        _format = format;
+        _tableBox.Text = Path.GetFileNameWithoutExtension(filePath);
         _text = null;
         _suppress = true;
         try
@@ -200,12 +220,12 @@ public sealed class ImportDialog
             SetStatus("Reading file…");
             if (_format == ImportFormat.Delimited)
             {
-                _text = await File.ReadAllTextAsync(file.Path);
+                _text = await File.ReadAllTextAsync(filePath);
                 _delimiter.SelectedIndex = Array.IndexOf(ImportReaders.Delimiters, ImportReaders.DetectDelimiter(_text));
             }
             else if (_format == ImportFormat.Excel)
             {
-                var path = file.Path;
+                var path = filePath;
                 _sheet.ItemsSource = await Task.Run(() => ImportReaders.ExcelSheets(path));
                 _sheet.SelectedIndex = 0;
             }
@@ -475,6 +495,48 @@ public sealed class ImportDialog
         }
     }
 
+    // ------------------------------------------------------------------ drag and drop
+
+    private const string DropIdle = "Drag & drop a CSV, text, JSON or Excel file here";
+
+    private FrameworkElement BuildDropZone()
+    {
+        SetDropHighlight(false);
+        var content = new StackPanel { Spacing = 6, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        content.Children.Add(new FontIcon { Glyph = "\uE898", FontSize = 28, Foreground = Res("AccentTextFillColorPrimaryBrush") });
+        content.Children.Add(_dropText);
+        content.Children.Add(new TextBlock { Text = "or use Browse… below", FontSize = 12, Foreground = Res("TextFillColorSecondaryBrush"), HorizontalAlignment = HorizontalAlignment.Center });
+        var zone = new Grid { Height = 110 };
+        zone.Children.Add(_dropOutline);
+        zone.Children.Add(content);
+
+        // The whole dialog accepts drops; the zone just shows where they go.
+        _scroller.DragOver += (_, e) =>
+        {
+            if (_busy || !e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems)) return;
+            e.AcceptedOperation = Windows.ApplicationModel.DataTransfer.DataPackageOperation.Copy;
+            e.DragUIOverride.Caption = "Import this file";
+            SetDropHighlight(true);
+        };
+        _scroller.DragLeave += (_, _) => SetDropHighlight(false);
+        _scroller.Drop += async (_, e) =>
+        {
+            SetDropHighlight(false);
+            if (_busy || !e.DataView.Contains(Windows.ApplicationModel.DataTransfer.StandardDataFormats.StorageItems)) return;
+            var items = await e.DataView.GetStorageItemsAsync();
+            if (items.OfType<Windows.Storage.StorageFile>().FirstOrDefault() is { } file)
+                await LoadFileAsync(file.Path);
+        };
+        return zone;
+    }
+
+    private void SetDropHighlight(bool on)
+    {
+        _dropOutline.Stroke = Res(on ? "AccentFillColorDefaultBrush" : "ControlStrokeColorSecondaryBrush");
+        _dropOutline.Fill = Res(on ? "AccentFillColorTertiaryBrush" : "SubtleFillColorSecondaryBrush");
+        _dropText.Text = on ? "Release to import" : DropIdle;
+        _dropText.FontWeight = on ? FontWeights.Bold : FontWeights.SemiBold;
+    }
     private void ShowSuccess(int count, string target, bool created)
     {
         var panel = new StackPanel { Spacing = 16, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(48, 40, 48, 40) };

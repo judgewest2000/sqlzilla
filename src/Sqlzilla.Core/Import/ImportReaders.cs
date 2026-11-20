@@ -28,6 +28,34 @@ public static class ImportReaders
         _ => ImportFormat.Delimited,
     };
 
+    /// <summary>
+    /// Sniffs the start of a file and returns why it can't be imported as <paramref name="format"/>, or null if it looks fine.
+    /// Excel files must carry a zip (xlsx) or OLE (xls) signature; text formats must not look binary.
+    /// </summary>
+    public static string? CheckFile(string path, ImportFormat format)
+    {
+        var head = new byte[8192];
+        int n;
+        using (var stream = File.OpenRead(path)) n = stream.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
+        var bytes = head.AsSpan(0, n);
+        if (n == 0) return "The file is empty.";
+
+        bool zip = bytes.StartsWith("PK\x03\x04"u8);
+        bool ole = bytes.StartsWith(new byte[] { 0xD0, 0xCF, 0x11, 0xE0 });
+        if (format == ImportFormat.Excel)
+            return zip || ole ? null : "This doesn't look like an Excel workbook.";
+
+        if (bytes.StartsWith(new byte[] { 0xFF, 0xFE }) || bytes.StartsWith(new byte[] { 0xFE, 0xFF })) return null; // UTF-16 text
+        if (zip || ole) return "This looks like an Excel or other packaged file, not text. Excel files need an .xlsx or .xls extension.";
+        int control = 0;
+        foreach (var b in bytes)
+        {
+            if (b == 0) return "This looks like a binary file (an image, document or program), not CSV, text or JSON.";
+            if (b < 0x20 && b is not (byte)'\t' and not (byte)'\n' and not (byte)'\r' and not 0x0C) control++;
+        }
+        return control * 20 > n ? "This looks like a binary file (an image, document or program), not CSV, text or JSON." : null;
+    }
+
     // ------------------------------------------------------------------ delimited
 
     /// <summary>Picks the candidate delimiter that appears most (outside quotes) in the first line.</summary>

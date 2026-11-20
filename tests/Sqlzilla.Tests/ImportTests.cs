@@ -69,4 +69,20 @@ public class ImportTests
     public void CreateTableSqlQuotesNames() =>
         Assert.Equal("CREATE TABLE [dbo].[My]]Table]\n(\n    [Id] int NOT NULL,\n    [Full Name] nvarchar(50) NULL\n);",
             new ImportPlan("dbo", "My]Table", true, [new(0, "Id", "int", false), new(1, "Full Name", "nvarchar(50)")]).CreateTableSql());
+
+    [Theory]
+    [InlineData(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D }, ImportFormat.Delimited, false)] // PNG
+    [InlineData(new byte[] { 0x61, 0x2C, 0x62, 0x0D, 0x0A, 0x31, 0x2C, 0x32 }, ImportFormat.Delimited, true)]              // "a,b\r\n1,2"
+    [InlineData(new byte[] { 0x50, 0x4B, 0x03, 0x04, 0x14, 0x00 }, ImportFormat.Excel, true)]                              // xlsx zip
+    [InlineData(new byte[] { 0x61, 0x2C, 0x62 }, ImportFormat.Excel, false)]                                                // text named .xlsx
+    public void CheckFileRejectsWrongContent(byte[] content, ImportFormat format, bool ok)
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, content);
+            Assert.Equal(ok, ImportReaders.CheckFile(path, format) == null);
+        }
+        finally { File.Delete(path); }
+    }
 }
