@@ -201,6 +201,7 @@ public sealed partial class MainWindow : Window
                 break;
             case ExplorerEntryKind.Server:
                 Add("New query", "\uE8A5", () => OpenQuery(entry));
+                menu.Items.Add(OpenTabsSubMenu(entry));
                 if (!entry.Server!.HasDatabase) Add("Refresh databases", "\uE72C", () => _ = RefreshServerAsync(entry));
                 menu.Items.Add(new MenuFlyoutSeparator());
                 Add("Edit server…", "\uE70F", () => _ = EditServerAsync(entry.Group, entry.Server));
@@ -210,6 +211,7 @@ public sealed partial class MainWindow : Window
                 break;
             case ExplorerEntryKind.Database:
                 Add("New query", "\uE8A5", () => OpenQuery(entry));
+                menu.Items.Add(OpenTabsSubMenu(entry));
                 break;
             case ExplorerEntryKind.Placeholder:
                 Add("Retry", "\uE72C", () =>
@@ -220,6 +222,34 @@ public sealed partial class MainWindow : Window
                 break;
         }
         menu.ShowAt(ServerTree, new FlyoutShowOptions { Position = e.GetPosition(ServerTree) });
+    }
+
+    /// <summary>
+    /// Lists the open query windows for a database (or, for a server with a database list, every database on it); picking one selects that tab.
+    /// </summary>
+    private MenuFlyoutItemBase OpenTabsSubMenu(ExplorerEntry entry)
+    {
+        var allDatabases = entry.Kind == ExplorerEntryKind.Server && !entry.Server!.HasDatabase;
+        var matches = OpenQueries
+            .Where(q => q.Query.Server.Id == entry.Server!.Id)
+            .Where(q => allDatabases || string.Equals(q.Query.Database, entry.TargetDatabase, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var sub = new MenuFlyoutSubItem { Text = $"Open tabs ({matches.Count})", Icon = new FontIcon { Glyph = "\uE737" } };
+        if (matches.Count == 0)
+        {
+            sub.Items.Add(new MenuFlyoutItem { Text = "No open tabs", IsEnabled = false });
+            return sub;
+        }
+        foreach (var (tab, query) in matches)
+        {
+            var text = allDatabases && query.Database.Length > 0 ? $"{query.Title}  ({query.Database})" : query.Title;
+            if (query.IsDirty) text += " ●";
+            var item = new MenuFlyoutItem { Text = text };
+            item.Click += (_, _) => Tabs.SelectedItem = tab;
+            sub.Items.Add(item);
+        }
+        return sub;
     }
 
     private async Task RefreshServerAsync(ExplorerEntry serverEntry)
@@ -411,6 +441,13 @@ public sealed partial class MainWindow : Window
             QueueSessionSave();
         };
         UpdateTabHeader(tab, query);
+        tab.RightTapped += (_, e) =>
+        {
+            for (var d = e.OriginalSource as DependencyObject; d != null && d != tab; d = VisualTreeHelper.GetParent(d))
+                if (d == query) return;   // right-clicks inside the editor/results have their own menus
+            e.Handled = true;
+            TabContextMenu(tab).ShowAt(tab, new FlyoutShowOptions { Position = e.GetPosition(tab) });
+        };
         Tabs.TabItems.Add(tab);
         Tabs.SelectedItem = tab;
         UpdateWelcome();
@@ -541,6 +578,35 @@ public sealed partial class MainWindow : Window
         ReclaimMemory();
         QueueSessionSave();
         return true;
+    }
+
+    private MenuFlyout TabContextMenu(TabViewItem tab)
+    {
+        var menu = new MenuFlyout();
+        void Add(string text, string glyph, Action action)
+        {
+            var item = new MenuFlyoutItem { Text = text, Icon = new FontIcon { Glyph = glyph } };
+            item.Click += (_, _) => action();
+            menu.Items.Add(item);
+        }
+        Add("Close", "\uE711", () => _ = CloseTabAsync(tab));
+        menu.Items.Add(new MenuFlyoutSeparator());
+        Add("Close all but this - No Verify", "\uE8BB", () => CloseTabsWithoutAsking(Tabs.TabItems.OfType<TabViewItem>().Where(t => t != tab)));
+        Add("Close ALL Tabs - No Verify", "\uE8BB", () => CloseTabsWithoutAsking(Tabs.TabItems.OfType<TabViewItem>()));
+        return menu;
+    }
+
+    /// <summary>Closes the tabs straight away, discarding any unsaved changes.</summary>
+    private void CloseTabsWithoutAsking(IEnumerable<TabViewItem> tabs)
+    {
+        foreach (var tab in tabs.ToList())
+        {
+            if (tab.Content is QueryTab query) query.Close();
+            Tabs.TabItems.Remove(tab);
+        }
+        UpdateWelcome();
+        ReclaimMemory();
+        QueueSessionSave();
     }
 
     /// <summary>Open tabs, including unsaved text, are remembered in the session, so closing doesn't need to ask.</summary>
