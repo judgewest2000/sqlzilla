@@ -177,6 +177,8 @@ public sealed partial class QueryTab : UserControl
 
     private int _schemaNoteVersion;
 
+    private void RefreshIntellisense_Click(object sender, RoutedEventArgs e) => _ = RefreshIntellisenseAsync();
+
     /// <summary>Shift+Alt+R: reloads the schema used by IntelliSense, squiggles and the docs panel.</summary>
     private async Task RefreshIntellisenseAsync()
     {
