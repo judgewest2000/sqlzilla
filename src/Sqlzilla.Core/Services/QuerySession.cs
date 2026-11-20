@@ -22,6 +22,15 @@ public sealed class ResultSet
 
     public required IReadOnlyList<ResultColumn> Columns { get; init; }
 
+    /// <summary>A finished set of rows that didn't come from a query (e.g. an import preview).</summary>
+    public static ResultSet FromRows(IReadOnlyList<ResultColumn> columns, IEnumerable<string?[]> rows)
+    {
+        var set = new ResultSet { Columns = columns };
+        set.Rows.AddRange(rows);
+        set.MarkComplete();
+        return set;
+    }
+
     /// <summary>Committed rows: cell text, or null for SQL NULL.</summary>
     public List<string?[]> Rows { get; } = new();
 

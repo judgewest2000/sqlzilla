@@ -53,8 +53,12 @@ Use Windows Settings > Apps, or run the one-liner above with `-Uninstall`.
   - Understands CTEs, temp tables, table variables, `SELECT INTO` and derived tables.
   - Signature help for built-in functions, user functions and stored procedure parameters.
   - Hover for column types, keys and foreign keys, and object or function details.
-  - Red squiggles for syntax errors; amber squiggles for unknown tables and procedures.
+  - Red squiggles for syntax errors and for unknown or ambiguous column names; amber squiggles for unknown tables and procedures.
   - F1 opens a schema docs panel for the item under the caret. It has search, columns, parameters and foreign-key links.
+- **Import data**: right-click a database and choose **Import data…** to load a CSV/delimited text, JSON or Excel file.
+  - Load it into a new table, with column types guessed from the data, or append it to an existing table by mapping columns.
+  - The import runs in one transaction, so a bad row leaves nothing behind.
+- **Tabs**: right-click a tab for **Close**, **Close all but this** and **Close ALL Tabs**. The last two close tabs without asking, even if they have unsaved changes. Right-click a database for **Open tabs**, which lists its open query windows.
 
 Connections are stored in `%LOCALAPPDATA%\Sqlzilla\connections.json`. Passwords and secrets are encrypted with Windows DPAPI.
 

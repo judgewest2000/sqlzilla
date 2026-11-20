@@ -202,6 +202,7 @@ public sealed partial class MainWindow : Window
             case ExplorerEntryKind.Server:
                 Add("New query", "\uE8A5", () => OpenQuery(entry));
                 menu.Items.Add(OpenTabsSubMenu(entry));
+                if (entry.Server!.HasDatabase) menu.Items.Add(ImportMenuItem(entry));
                 if (!entry.Server!.HasDatabase) Add("Refresh databases", "\uE72C", () => _ = RefreshServerAsync(entry));
                 menu.Items.Add(new MenuFlyoutSeparator());
                 Add("Edit server…", "\uE70F", () => _ = EditServerAsync(entry.Group, entry.Server));
@@ -212,6 +213,8 @@ public sealed partial class MainWindow : Window
             case ExplorerEntryKind.Database:
                 Add("New query", "\uE8A5", () => OpenQuery(entry));
                 menu.Items.Add(OpenTabsSubMenu(entry));
+                menu.Items.Add(new MenuFlyoutSeparator());
+                menu.Items.Add(ImportMenuItem(entry));
                 break;
             case ExplorerEntryKind.Placeholder:
                 Add("Retry", "\uE72C", () =>
@@ -222,6 +225,20 @@ public sealed partial class MainWindow : Window
                 break;
         }
         menu.ShowAt(ServerTree, new FlyoutShowOptions { Position = e.GetPosition(ServerTree) });
+    }
+
+    /// <summary>Imports a file into the entry's database; not offered for read-only groups.</summary>
+    private MenuFlyoutItem ImportMenuItem(ExplorerEntry entry)
+    {
+        var readOnly = entry.Group.IsReadOnly;
+        var item = new MenuFlyoutItem
+        {
+            Text = readOnly ? "Import data… (read-only group)" : "Import data…",
+            Icon = new FontIcon { Glyph = "\uE8B5" },
+            IsEnabled = !readOnly,
+        };
+        item.Click += async (_, _) => await ImportDialog.ShowAsync(XamlRoot, entry.Server!, entry.TargetDatabase);
+        return item;
     }
 
     /// <summary>
