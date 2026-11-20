@@ -44,6 +44,7 @@ public class ImportTests
     [InlineData("date", false, "2024-01-31", "2024-02-01")]
     [InlineData("datetime2", false, "2024-01-31 10:15:00", "2024-02-01")]
     [InlineData("datetimeoffset", false, "2024-01-31T10:15:00Z", "2024-01-31T10:15:00+01:00")]
+    [InlineData("time", false, "06:00", "23:59:30")]
     [InlineData("uniqueidentifier", false, "6f9619ff-8b86-d011-b42d-00c04fc964ff")]
     [InlineData("nvarchar(100)", false, "a", "this value is definitely longer than fifty characters in total length")]
     [InlineData("nvarchar(50)", true, null, " ")]

@@ -47,6 +47,7 @@ public sealed class ImportDialog
     private readonly Border _previewHost = new() { Height = 220 };
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
     private readonly ProgressBar _progress = new() { Visibility = Visibility.Collapsed };
+    private readonly ScrollViewer _scroller = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
 
     private readonly List<ColumnRow> _rows = new();
     private List<SchemaObject> _tables = new();
@@ -114,11 +115,12 @@ public sealed class ImportDialog
         panel.Children.Add(_progress);
         panel.Children.Add(_status);
 
+        _scroller.Content = panel;
         _dialog = new ContentDialog
         {
             XamlRoot = root,
             Title = "Import data",
-            Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
+            Content = _scroller,
             PrimaryButtonText = "Import",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
@@ -155,6 +157,8 @@ public sealed class ImportDialog
     {
         _status.Text = text;
         _status.Foreground = Res(brush);
+        _status.UpdateLayout();
+        _scroller.ChangeView(null, _scroller.ScrollableHeight, null);
     }
 
     // ------------------------------------------------------------------ loading
@@ -342,7 +346,10 @@ public sealed class ImportDialog
             {
                 row.Include = new CheckBox { IsChecked = true, MinWidth = 0 };
                 row.Name = new TextBox { Text = name, Width = 200 };
-                row.Type = new ComboBox { IsEditable = true, ItemsSource = CommonTypes, Text = _inferred[i].SqlType, Width = 170 };
+                var inferredType = _inferred[i].SqlType;
+                var types = CommonTypes.Contains(inferredType) ? CommonTypes : [inferredType, .. CommonTypes];
+                // Editable ComboBox doesn't draw Text set before it loads, so pick the item instead.
+                row.Type = new ComboBox { IsEditable = true, ItemsSource = types, SelectedItem = inferredType, Width = 170 };
                 row.Nullable = new CheckBox { IsChecked = _inferred[i].Nullable, MinWidth = 0 };
                 Place(row.Include, r, 0);
                 Place(source, r, 1);
@@ -397,7 +404,7 @@ public sealed class ImportDialog
             var r = _rows[i];
             if (r.Include!.IsChecked != true) continue;
             var columnName = r.Name!.Text.Trim();
-            var type = (r.Type!.Text ?? "").Trim();
+            var type = (string.IsNullOrWhiteSpace(r.Type!.Text) ? r.Type.SelectedItem as string ?? "" : r.Type.Text).Trim();
             if (columnName.Length == 0) return (null, $"File column {_data.Columns[i]} needs a name.");
             if (type.Length == 0) return (null, $"Column {columnName} needs a type.");
             newColumns.Add(new ImportColumn(i, columnName, type, r.Nullable!.IsChecked == true));
@@ -439,7 +446,7 @@ public sealed class ImportDialog
         try
         {
             var count = await Task.Run(() => DataImporter.ImportAsync(connectionString, plan, rows, progress, ct));
-            SetStatus($"Imported {count:N0} rows into {_database}.{plan.Schema}.{plan.Table}.", "SystemFillColorSuccessBrush");
+            ShowSuccess(count, $"{_database}.{plan.Schema}.{plan.Table}", plan.CreateTable);
             _dialog.PrimaryButtonText = "";
             _dialog.CloseButtonText = "Close";
             if (plan.CreateTable)
@@ -466,5 +473,38 @@ public sealed class ImportDialog
             _dialog.IsPrimaryButtonEnabled = true;
             _dialog.CloseButtonText = "Cancel";
         }
+    }
+
+    private void ShowSuccess(int count, string target, bool created)
+    {
+        var panel = new StackPanel { Spacing = 16, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(48, 40, 48, 40) };
+        var badge = new Border
+        {
+            Width = 120, Height = 120, CornerRadius = new CornerRadius(60),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Background = Res("SystemFillColorSuccessBrush"),
+            Child = new FontIcon { Glyph = "\uE73E", FontSize = 64, Foreground = new SolidColorBrush(Microsoft.UI.Colors.White) },
+        };
+        panel.Children.Add(badge);
+        panel.Children.Add(new TextBlock { Text = "🎉 Import complete! 🎉", FontSize = 32, FontWeight = FontWeights.Bold, HorizontalAlignment = HorizontalAlignment.Center });
+        panel.Children.Add(new TextBlock { Text = $"{count:N0} rows", FontSize = 48, FontWeight = FontWeights.SemiBold, Foreground = Res("SystemFillColorSuccessBrush"), HorizontalAlignment = HorizontalAlignment.Center });
+        panel.Children.Add(new TextBlock { Text = $"{(created ? "imported into new table" : "appended to")} {target}", FontSize = 18, TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, IsTextSelectionEnabled = true, HorizontalAlignment = HorizontalAlignment.Center });
+        _scroller.Content = panel;
+        _dialog.Title = "";
+        _dialog.DefaultButton = ContentDialogButton.Close;
+
+        badge.RenderTransformOrigin = new Windows.Foundation.Point(0.5, 0.5);
+        var scale = new ScaleTransform { ScaleX = 0.2, ScaleY = 0.2 };
+        badge.RenderTransform = scale;
+        var ease = new Microsoft.UI.Xaml.Media.Animation.ElasticEase { Oscillations = 2, Springiness = 4, EasingMode = Microsoft.UI.Xaml.Media.Animation.EasingMode.EaseOut };
+        var story = new Microsoft.UI.Xaml.Media.Animation.Storyboard();
+        foreach (var prop in new[] { "ScaleX", "ScaleY" })
+        {
+            var anim = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation { From = 0.2, To = 1, Duration = TimeSpan.FromMilliseconds(900), EasingFunction = ease };
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(anim, scale);
+            Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(anim, prop);
+            story.Children.Add(anim);
+        }
+        story.Begin();
     }
 }

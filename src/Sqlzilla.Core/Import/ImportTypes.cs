@@ -14,6 +14,8 @@ public static class ImportTypes
         "yyyy-MM-dd HH:mm", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm:ss.FFFFFFF",
     ];
 
+    private static readonly string[] TimeFormats = [@"h\:mm", @"hh\:mm", @"h\:mm\:ss", @"hh\:mm\:ss", @"hh\:mm\:ss\.FFFFFFF"];
+
     private static readonly int[] StringSizes = [50, 100, 255, 500, 1000, 4000];
 
     /// <summary>The narrowest type that fits every non-empty value; nullable when any value is empty.</summary>
@@ -21,7 +23,7 @@ public static class ImportTypes
     {
         bool any = false, nullable = false;
         bool isBit = true, isInt = true, isBigint = true, isDecimal = true, isFloat = true, isGuid = true;
-        bool isDate = true, isDateTime = true, isOffset = true;
+        bool isDate = true, isDateTime = true, isOffset = true, isTime = true;
         int maxLength = 0, intDigits = 1, scale = 0;
 
         foreach (var value in values)
@@ -49,6 +51,7 @@ public static class ImportTypes
             }
             isFloat &= number && double.TryParse(s, NumberStyles.Float, Inv, out _);
             isGuid &= s.Length >= 32 && Guid.TryParse(s, out _);
+            isTime &= TimeSpan.TryParseExact(s, TimeFormats, Inv, out var time) && time < TimeSpan.FromDays(1);
             isOffset &= HasOffset(s) && DateTimeOffset.TryParse(s, Inv, DateTimeStyles.None, out _);
             if (isDateTime && TryParseDate(s, out var date))
                 isDate &= date.TimeOfDay == TimeSpan.Zero && !s.Contains(':');
@@ -62,6 +65,7 @@ public static class ImportTypes
         if (isDecimal && intDigits + scale <= 38) return ($"decimal({Math.Clamp(intDigits + scale, 18, 38)},{scale})", nullable);
         if (isFloat) return ("float", nullable);
         if (isGuid) return ("uniqueidentifier", nullable);
+        if (isTime) return ("time", nullable);
         if (isOffset) return ("datetimeoffset", nullable);
         if (isDate) return ("date", nullable);
         if (isDateTime) return ("datetime2", nullable);
