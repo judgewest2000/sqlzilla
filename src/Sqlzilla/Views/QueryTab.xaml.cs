@@ -175,6 +175,29 @@ public sealed partial class QueryTab : UserControl
         Editor.RefreshDiagnostics();
     }
 
+    private int _schemaNoteVersion;
+
+    /// <summary>Shift+Alt+R: reloads the schema used by IntelliSense, squiggles and the docs panel.</summary>
+    private async Task RefreshIntellisenseAsync()
+    {
+        var version = ++_schemaNoteVersion;
+        if (!_session.IsOpen || IsExecuting)
+        {
+            SchemaNote.Text = IsExecuting ? "IntelliSense refresh: wait for the query to finish" : "IntelliSense refresh: not connected";
+        }
+        else
+        {
+            SchemaNote.Text = "Refreshing IntelliSense…";
+            await LoadSchemaAsync();
+            if (_closed || version != _schemaNoteVersion) return;
+            SchemaNote.Text = _schema.Objects.Count > 0
+                ? $"IntelliSense refreshed: {_schema.Objects.Count:N0} objects in {_session.Database}"
+                : "IntelliSense refresh failed (no schema returned)";
+        }
+        await Task.Delay(4000);
+        if (!_closed && version == _schemaNoteVersion) SchemaNote.Text = "";
+    }
+
     // ------------------------------------------------------------------ schema docs (F1)
 
     private const double DocsMinWidth = 260;
@@ -255,6 +278,7 @@ public sealed partial class QueryTab : UserControl
             case EditorCommand.Save: _ = SaveAsync(false); break;
             case EditorCommand.ToggleResults: ToggleResults(); break;
             case EditorCommand.Docs: _ = ShowDocsAtCaretAsync(pushHistory: true); break;
+            case EditorCommand.RefreshIntellisense: _ = RefreshIntellisenseAsync(); break;
         }
     }
 

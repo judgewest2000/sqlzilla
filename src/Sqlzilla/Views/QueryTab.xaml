@@ -105,6 +105,7 @@
                 <FontIcon x:Name="StateIcon" Glyph="&#xE73E;" FontSize="12" />
                 <TextBlock x:Name="StateText" Text="Connecting…" FontSize="12" />
             </StackPanel>
+            <TextBlock x:Name="SchemaNote" Grid.Column="1" FontSize="12" VerticalAlignment="Center" HorizontalAlignment="Right" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <TextBlock x:Name="GroupText" Grid.Column="2" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" />
             <TextBlock x:Name="ServerText" Grid.Column="3" FontSize="12" VerticalAlignment="Center" MaxWidth="320" TextTrimming="CharacterEllipsis" />
             <TextBlock x:Name="LoginText" Grid.Column="4" FontSize="12" VerticalAlignment="Center" MaxWidth="260" TextTrimming="CharacterEllipsis" />

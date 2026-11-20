@@ -78,6 +78,7 @@ Like Notepad++, open tabs are remembered between runs in `%LOCALAPPDATA%\Sqlzill
 | Ctrl+Space | Show completions |
 | Ctrl+Shift+Space | Show parameter info |
 | F1 | Schema docs for the item under the caret |
+| Shift+Alt+R | Refresh IntelliSense (reload tables, columns and routines) |
 
 ## Updates
 

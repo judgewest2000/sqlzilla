@@ -9,7 +9,7 @@ using WinUIEditor;
 
 namespace Sqlzilla.Views;
 
-public enum EditorCommand { Execute, Save, ToggleResults, Docs }
+public enum EditorCommand { Execute, Save, ToggleResults, Docs, RefreshIntellisense }
 
 /// <summary>
 /// Native Scintilla code editor (WinUIEdit) with T-SQL highlighting. Offsets exposed to callers are UTF-16 offsets into LF-normalised <see cref="Text"/>.
@@ -313,6 +313,7 @@ public sealed partial class CodeEditor : UserControl
             VirtualKey.S when ctrl && !shift && !alt => EditorCommand.Save,
             VirtualKey.R when ctrl && !shift && !alt => EditorCommand.ToggleResults,
             VirtualKey.F1 when !ctrl && !shift && !alt => EditorCommand.Docs,
+            VirtualKey.R when !ctrl && shift && alt => EditorCommand.RefreshIntellisense,
             _ => null,
         };
         if (command != null)
