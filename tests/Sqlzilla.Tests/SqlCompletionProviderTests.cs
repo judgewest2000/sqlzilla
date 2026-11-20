@@ -219,6 +219,29 @@ public class SqlCompletionProviderTests
     }
 
     [Fact]
+    public void DiagnosticsFlagUnknownAndAmbiguousColumns()
+    {
+        const string script = "SELECT CONCAT('a ', CustomerId), o.Nope, Bogus FROM dbo.Orders o JOIN dbo.Customers c ON c.CustomerId = o.CustomerId";
+        var errors = SqlDiagnostics.Analyze(script, Shop);
+        Assert.Equal(
+            ["Ambiguous column name 'CustomerId'.", "Invalid column name 'Nope'.", "Invalid column name 'Bogus'."],
+            errors.Select(e => e.Message));
+        Assert.All(errors, e => Assert.Equal(DiagnosticSeverity.Error, e.Severity));
+        Assert.Equal("Nope", script.Substring(errors[1].Start, errors[1].Length));
+    }
+
+    [Theory]
+    [InlineData("SELECT Total AS t FROM dbo.Orders ORDER BY t")]
+    [InlineData("SELECT DATEADD(day, 1, GETDATE()), DATEDIFF(mi, 0, 1) FROM dbo.Orders")]
+    [InlineData("SELECT Name FROM dbo.Customers c WHERE EXISTS (SELECT 1 FROM dbo.OrderLines WHERE OrderId = CustomerId)")]
+    [InlineData("SELECT Whatever FROM dbo.Orders o JOIN (SELECT 1 AS Whatever) d ON 1 = 1")]
+    [InlineData("WITH Orders AS (SELECT 1 AS Anything) SELECT Anything FROM Orders")]
+    [InlineData("SELECT Anything FROM #temp t JOIN dbo.Orders o ON t.Id = o.OrderId")]
+    [InlineData("UPDATE o SET Total = 0 FROM dbo.Orders o WHERE EXISTS (SELECT 1 FROM dbo.OrderLines l WHERE l.OrderId = o.OrderId AND Total > 0)")]
+    public void DiagnosticsDoNotFlagColumnsTheyCannotBeSureAbout(string script) =>
+        Assert.Empty(SqlDiagnostics.Analyze(script, Shop));
+
+    [Fact]
     public void DocsTargetResolvesColumnsObjectsAndBuiltins()
     {
         const string text = "SELECT o.Total, GETDATE() FROM dbo.Orders o";
