@@ -11,7 +11,7 @@
     <Grid x:Name="Root">
         <Grid.Resources>
             <DataTemplate x:Key="ExplorerItemTemplate" x:DataType="views:ExplorerEntry">
-                <TreeViewItem ItemsSource="{x:Bind Children}" IsExpanded="{x:Bind IsExpanded, Mode=TwoWay}"
+                <TreeViewItem ItemsSource="{x:Bind Children}" IsExpanded="{x:Bind IsExpanded, Mode=OneWay}"
                               HasUnrealizedChildren="False" ToolTipService.ToolTip="{x:Bind Label, Mode=OneWay}">
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Border Width="14" Height="14" CornerRadius="4" Background="{x:Bind GroupBrush}" VerticalAlignment="Center"
@@ -88,9 +88,8 @@
                 <TextBox x:Name="ExplorerSearch" Grid.Row="1" Margin="4,0" PlaceholderText="Search servers and databases"
                          TextChanged="ExplorerSearch_TextChanged" KeyDown="ExplorerSearch_KeyDown"
                          ToolTipService.ToolTip="Filters by group, server or database name (Ctrl+Shift+F). Enter opens the first match, Esc clears." />
-                <TreeView x:Name="ServerTree" Grid.Row="2" ItemsSource="{x:Bind RootEntries}" SelectionMode="Single" ItemTemplate="{StaticResource ExplorerItemTemplate}"
-                          ItemInvoked="ServerTree_ItemInvoked" Expanding="ServerTree_Expanding" DoubleTapped="ServerTree_DoubleTapped"
-                          RightTapped="ServerTree_RightTapped" CanDragItems="False" AllowDrop="False" />
+                <!-- ServerTree is created in code: RebuildTree replaces it on each rebuild -->
+                <Border x:Name="ServerTreeHost" Grid.Row="2" />
                 <TextBlock x:Name="EmptyHint" Grid.Row="2" Margin="12" TextWrapping="Wrap" Visibility="Collapsed"
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                 <Grid Grid.Row="3" Padding="8,8,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,1,0,0">

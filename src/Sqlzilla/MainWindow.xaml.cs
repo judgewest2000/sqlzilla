@@ -23,6 +23,7 @@ public sealed partial class MainWindow : Window
     private string? _lastServerId;
 
     public ObservableCollection<ExplorerEntry> RootEntries { get; } = new();
+    private TreeView ServerTree = null!;
 
     /// <summary>Window handle for file pickers.</summary>
     public static IntPtr Handle { get; private set; }
@@ -85,15 +86,78 @@ public sealed partial class MainWindow : Window
     private void RebuildTree(bool expandGroups = false, ISet<string>? expanded = null)
     {
         expanded ??= _explorerFilter.Length > 0 ? new HashSet<string>() : ExpandedIds();
-        var selectedId = (ServerTree.SelectedItem as ExplorerEntry)?.Id;
+        var selectedId = (ServerTree?.SelectedItem as ExplorerEntry)?.Id;
         RootEntries.Clear();
         foreach (var entry in BuildExplorerEntries(_explorerFilter, expanded, expandGroups)) RootEntries.Add(entry);
+        ReplaceServerTree();
         EmptyHint.Text = _groups.Count == 0
             ? "No groups yet. Create a group (e.g. Production, Develop) and add servers to it."
             : $"Nothing matches \u201C{_explorerFilter}\u201D.";
         EmptyHint.Visibility = RootEntries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        if (selectedId != null && Flatten(RootEntries).FirstOrDefault(e => e.Id == selectedId) is { } selected) ServerTree.SelectedItem = selected;
+        if (selectedId != null && VisibleEntries(RootEntries).FirstOrDefault(e => e.Id == selectedId) is { } selected) SelectWhenShown(selected);
     }
+
+    /// <summary>
+    /// Swaps in a new TreeView. Reusing one lets recycled item containers keep their old collapsed state,
+    /// so after a search some matches stayed hidden inside collapsed servers.
+    /// </summary>
+    private void ReplaceServerTree()
+    {
+        if (ServerTree != null) ServerTree.ItemsSource = null;
+        ServerTree = new TreeView
+        {
+            ItemsSource = RootEntries,
+            ItemTemplate = (DataTemplate)Root.Resources["ExplorerItemTemplate"],
+            SelectionMode = TreeViewSelectionMode.Single,
+            CanDragItems = false,
+            AllowDrop = false,
+        };
+        ServerTree.ItemInvoked += ServerTree_ItemInvoked;
+        ServerTree.Expanding += ServerTree_Expanding;
+        ServerTree.Collapsed += ServerTree_Collapsed;
+        ServerTree.DoubleTapped += ServerTree_DoubleTapped;
+        ServerTree.RightTapped += ServerTree_RightTapped;
+        ServerTreeHost.Child = ServerTree;
+    }
+
+    /// <summary>
+    /// Selects the entry once the tree has laid it out. Selecting an item inside a collapsed node makes WinUI
+    /// spin forever, so this waits until every ancestor is really expanded, and gives up if it never is.
+    /// </summary>
+    private void SelectWhenShown(ExplorerEntry entry)
+    {
+        var tree = ServerTree;
+        var passes = 0;
+        void Select()
+        {
+            if (tree != ServerTree || !Flatten(RootEntries).Contains(entry)) return;   // rebuilt since
+            if (ShownInTree(tree, RootEntries, entry)) tree.SelectedItem = entry;
+            else if (++passes < 10) DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, Select);
+        }
+        DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, Select);
+    }
+
+    /// <summary>True when every ancestor's tree item is actually expanded, not just marked as expanded.</summary>
+    private static bool ShownInTree(TreeView tree, IEnumerable<ExplorerEntry> roots, ExplorerEntry entry)
+    {
+        List<ExplorerEntry>? PathTo(IEnumerable<ExplorerEntry> level)
+        {
+            foreach (var e in level)
+            {
+                if (ReferenceEquals(e, entry)) return new();
+                if (PathTo(e.Children) is { } rest) { rest.Insert(0, e); return rest; }
+            }
+            return null;
+        }
+        return PathTo(roots) is { } path && path.All(p => tree.ContainerFromItem(p) is TreeViewItem { IsExpanded: true });
+    }
+
+    /// <summary>
+    /// Entries not hidden inside a collapsed parent. Only these may be given to TreeView.SelectedItem:
+    /// selecting a hidden item makes WinUI spin forever.
+    /// </summary>
+    private static IEnumerable<ExplorerEntry> VisibleEntries(IEnumerable<ExplorerEntry> entries) =>
+        entries.SelectMany(e => new[] { e }.Concat(e.IsExpanded ? VisibleEntries(e.Children) : []));
 
     private HashSet<string> ExpandedIds() => new(Flatten(RootEntries).Where(e => e.IsExpanded).Select(e => e.Id));
 
@@ -174,7 +238,14 @@ public sealed partial class MainWindow : Window
 
     private void ServerTree_Expanding(TreeView sender, TreeViewExpandingEventArgs args)
     {
-        if (args.Item is ExplorerEntry { Kind: ExplorerEntryKind.Server } entry) _ = LoadDatabasesAsync(entry, false);
+        if (args.Item is not ExplorerEntry entry) return;
+        entry.IsExpanded = true;   // the template binds IsExpanded one way, so user expands are copied back here
+        if (entry.Kind == ExplorerEntryKind.Server) _ = LoadDatabasesAsync(entry, false);
+    }
+
+    private void ServerTree_Collapsed(TreeView sender, TreeViewCollapsedEventArgs args)
+    {
+        if (args.Item is ExplorerEntry entry) entry.IsExpanded = false;
     }
 
     private void ServerTree_ItemInvoked(TreeView sender, TreeViewItemInvokedEventArgs args)
@@ -383,7 +454,7 @@ public sealed partial class MainWindow : Window
         if (FindEntry(r.Group.Id) is { } g) g.IsExpanded = true;
         if (FindEntry(r.Server.Id) is { } s)
         {
-            ServerTree.SelectedItem = s;
+            SelectWhenShown(s);
             _lastServerId = r.Server.Id;
             if (_pendingFiles.Count > 0) await OpenPendingFilesAsync();
             else if (r.Server.HasDatabase) OpenQuery(s);

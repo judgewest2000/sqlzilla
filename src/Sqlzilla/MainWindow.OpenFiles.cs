@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -174,17 +173,7 @@ public sealed partial class MainWindow
     /// <summary>A searchable copy of the server explorer for choosing where a script will run.</summary>
     private async Task<(ServerGroup Group, ServerConnection Server, string Database)?> PickConnectionAsync(IReadOnlyList<string> paths)
     {
-        var entries = new ObservableCollection<ExplorerEntry>();
         var search = new TextBox { PlaceholderText = "Search servers and databases" };
-        var tree = new TreeView
-        {
-            ItemsSource = entries,
-            ItemTemplate = (DataTemplate)Root.Resources["ExplorerItemTemplate"],
-            SelectionMode = TreeViewSelectionMode.Single,
-            CanDragItems = false,
-            AllowDrop = false,
-            Height = 360,
-        };
         var empty = new TextBlock
         {
             Margin = new Thickness(12),
@@ -198,9 +187,7 @@ public sealed partial class MainWindow
             FontSize = 12,
             Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
         };
-        var treeHost = new Grid();
-        treeHost.Children.Add(tree);
-        treeHost.Children.Add(empty);
+        var treeHost = new Grid { Height = 360 };
         var panel = new StackPanel { Spacing = 8, Width = 440 };
         panel.Children.Add(intro);
         panel.Children.Add(search);
@@ -219,36 +206,99 @@ public sealed partial class MainWindow
 
         ExplorerEntry? Target(object? item) => item is ExplorerEntry { Server: not null } e && e.Kind != ExplorerEntryKind.Placeholder ? e : null;
         ExplorerEntry? chosen = null;
-
-        void Select(ExplorerEntry? entry)
-        {
-            tree.SelectedItem = entry;
-            dialog.IsPrimaryButtonEnabled = Target(entry) != null;
-            // The highlight only shows once the item's container exists, so select again after layout.
-            tree.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
-            {
-                if (entry == null || !(ReferenceEquals(tree.SelectedItem, entry) || tree.SelectedItem == null)) return;
-                tree.SelectedItem = null;   // re-assigning the same item is a no-op
-                tree.SelectedItem = entry;
-            });
-        }
-
-        void Refresh()
-        {
-            var selectedId = (tree.SelectedItem as ExplorerEntry)?.Id;
-            var filter = search.Text.Trim();
-            entries.Clear();
-            foreach (var entry in BuildExplorerEntries(filter, new HashSet<string>(), expandGroups: true)) entries.Add(entry);
-            empty.Text = $"Nothing matches \u201C{filter}\u201D.";
-            empty.Visibility = entries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-            var all = Flatten(entries).ToList();
-            Select(all.FirstOrDefault(e => e.Id == selectedId) ?? (filter.Length > 0 ? all.FirstOrDefault(e => e.IsQueryTarget) : null));
-        }
+        var entries = new List<ExplorerEntry>();
+        TreeView tree = null!;
+        ExplorerEntry? current = null;   // the picked entry; TreeView.SelectedItem only catches up once laid out
 
         void Choose(ExplorerEntry entry)
         {
             chosen = entry;
             dialog.Hide();
+        }
+
+        // Each refresh gets a new TreeView, so no item containers are recycled from the previous results.
+        TreeView CreateTree()
+        {
+            var t = new TreeView
+            {
+                ItemsSource = entries,
+                ItemTemplate = (DataTemplate)Root.Resources["ExplorerItemTemplate"],
+                SelectionMode = TreeViewSelectionMode.Single,
+                CanDragItems = false,
+                AllowDrop = false,
+            };
+            t.SelectionChanged += (_, _) =>
+            {
+                if (t != tree) return;
+                current = t.SelectedItem as ExplorerEntry;
+                dialog.IsPrimaryButtonEnabled = Target(current) != null;
+            };
+            t.Expanding += (sender, e) =>
+            {
+                if (e.Item is not ExplorerEntry entry) return;
+                entry.IsExpanded = true;
+                if (entry.Kind == ExplorerEntryKind.Server) _ = LoadDatabasesAsync(entry, false);
+            };
+            t.Collapsed += (sender, e) => { if (e.Item is ExplorerEntry entry) entry.IsExpanded = false; };
+            t.ItemInvoked += (_, e) =>
+            {
+                if (e.InvokedItem is ExplorerEntry entry && (entry.Kind == ExplorerEntryKind.Group || (entry.Kind == ExplorerEntryKind.Server && !entry.Server!.HasDatabase)))
+                    entry.IsExpanded = !entry.IsExpanded;
+            };
+            t.DoubleTapped += (_, e) =>
+            {
+                for (var d = e.OriginalSource as DependencyObject; d != null; d = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(d))
+                {
+                    if (d is not TreeViewItem item) continue;
+                    if (Target(t.ItemFromContainer(item)) is { IsQueryTarget: true } target)
+                    {
+                        e.Handled = true;
+                        Choose(target);
+                    }
+                    return;
+                }
+            };
+            return t;
+        }
+
+        void Select(ExplorerEntry? entry)
+        {
+            if (entry != null && !VisibleEntries(entries).Contains(entry)) entry = null;
+            current = entry;
+            dialog.IsPrimaryButtonEnabled = Target(entry) != null;
+            if (entry == null) return;
+            // Only hand the item to TreeView once it is laid out with every ancestor expanded: selecting an item
+            // inside a collapsed node makes WinUI spin forever.
+            var t = tree;
+            var attempts = 0;
+            void Highlight()
+            {
+                if (t != tree || !ReferenceEquals(current, entry)) return;
+                if (ShownInTree(t, entries, entry)) t.SelectedItem = entry;
+                else if (++attempts < 10) t.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, Highlight);
+            }
+            void OnLoaded(object sender, RoutedEventArgs e)
+            {
+                t.Loaded -= OnLoaded;
+                t.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, Highlight);
+            }
+            if (t.IsLoaded) t.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, Highlight);
+            else t.Loaded += OnLoaded;
+        }
+
+        void Refresh()
+        {
+            var selectedId = current?.Id;
+            var filter = search.Text.Trim();
+            entries = BuildExplorerEntries(filter, new HashSet<string>(), expandGroups: true);
+            treeHost.Children.Clear();
+            tree = CreateTree();
+            treeHost.Children.Add(tree);
+            treeHost.Children.Add(empty);
+            empty.Text = $"Nothing matches \u201C{filter}\u201D.";
+            empty.Visibility = entries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            var visible = VisibleEntries(entries).ToList();
+            Select(visible.FirstOrDefault(e => e.Id == selectedId) ?? (filter.Length > 0 ? visible.FirstOrDefault(e => e.IsQueryTarget) : null));
         }
 
         Refresh();
@@ -272,7 +322,7 @@ public sealed partial class MainWindow
         };
         search.KeyDown += (_, e) =>
         {
-            if (e.Key == VirtualKey.Enter && Target(tree.SelectedItem) is { } target)
+            if (e.Key == VirtualKey.Enter && Target(current) is { } target)
             {
                 e.Handled = true;
                 Choose(target);
@@ -283,30 +333,7 @@ public sealed partial class MainWindow
                 tree.Focus(FocusState.Keyboard);
             }
         };
-        tree.SelectionChanged += (_, _) => dialog.IsPrimaryButtonEnabled = Target(tree.SelectedItem) != null;
-        tree.Expanding += (sender, e) =>
-        {
-            if (e.Item is ExplorerEntry { Kind: ExplorerEntryKind.Server } server) _ = LoadDatabasesAsync(server, false);
-        };
-        tree.ItemInvoked += (_, e) =>
-        {
-            if (e.InvokedItem is ExplorerEntry entry && (entry.Kind == ExplorerEntryKind.Group || (entry.Kind == ExplorerEntryKind.Server && !entry.Server!.HasDatabase)))
-                entry.IsExpanded = !entry.IsExpanded;
-        };
-        tree.DoubleTapped += (_, e) =>
-        {
-            for (var d = e.OriginalSource as DependencyObject; d != null; d = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(d))
-            {
-                if (d is not TreeViewItem item) continue;
-                if (Target(tree.ItemFromContainer(item)) is { IsQueryTarget: true } target)
-                {
-                    e.Handled = true;
-                    Choose(target);
-                }
-                return;
-            }
-        };
-        dialog.PrimaryButtonClick += (_, _) => chosen = Target(tree.SelectedItem);
+        dialog.PrimaryButtonClick += (_, _) => chosen = Target(current);
         dialog.Opened += (_, _) => search.Focus(FocusState.Programmatic);
 
         try
@@ -318,7 +345,6 @@ public sealed partial class MainWindow
 
         return chosen is { } c ? (c.Group, c.Server!, c.TargetDatabase) : null;
     }
-
     private void BringToFront()
     {
         if (AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter { State: Microsoft.UI.Windowing.OverlappedPresenterState.Minimized } presenter)
