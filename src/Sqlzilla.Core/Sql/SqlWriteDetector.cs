@@ -25,9 +25,74 @@ public static class SqlWriteDetector
             // "UPDATE(col)" in a trigger and "FOR UPDATE" on a cursor don't modify anything.
             else if (word == "UPDATE" && (Next(tokens, i, script) == "(" || Previous(tokens, i, script) == "FOR")) continue;
 
+            if (TargetsOnlyTempObjects(tokens, i, word, script)) continue;
+            // MERGE … WHEN MATCHED THEN UPDATE/DELETE/INSERT: the MERGE itself was already judged.
+            if (word is "INSERT" or "UPDATE" or "DELETE" && Previous(tokens, i, script) == "THEN") continue;
             if (!found.Contains(word)) found.Add(word);
         }
         return found;
+    }
+
+    /// <summary>
+    /// True when the statement at <paramref name="i"/> only touches #temp tables or @table variables, which live in
+    /// tempdb / the session and are fine on read-only connections (CREATE TABLE #t, INSERT INTO #t, SELECT … INTO #t, DROP TABLE IF EXISTS #t …).
+    /// </summary>
+    private static bool TargetsOnlyTempObjects(List<SqlToken> tokens, int i, string word, string script)
+    {
+        string Word(int k) => k < tokens.Count ? tokens[k].Text(script).ToUpperInvariant() : "";
+        bool IsTemp(int k, bool allowVariable) => k < tokens.Count &&
+            (tokens[k].Kind == SqlTokenKind.TempTable || (allowVariable && tokens[k].Kind == SqlTokenKind.Variable));
+        int Skip(int k, params string[] words) { while (words.Contains(Word(k))) k++; return k; }
+        int SkipTop(int k)
+        {
+            if (Word(k) != "TOP") return k;
+            k++;
+            if (Word(k) == "(")
+            {
+                for (var depth = 0; k < tokens.Count; k++)
+                {
+                    if (Word(k) == "(") depth++;
+                    else if (Word(k) == ")" && --depth == 0) { k++; break; }
+                }
+            }
+            else k++;
+            return Skip(k, "PERCENT");
+        }
+        // "name ON target" after INDEX.
+        int IndexTarget(int k) => Word(k + 1) == "ON" ? k + 2 : tokens.Count;
+
+        switch (word)
+        {
+            case "INSERT": return IsTemp(Skip(SkipTop(i + 1), "INTO"), true);
+            case "UPDATE": return IsTemp(SkipTop(i + 1), true);
+            case "DELETE": return IsTemp(Skip(SkipTop(i + 1), "FROM"), true);
+            case "MERGE": return IsTemp(Skip(SkipTop(i + 1), "INTO"), true);
+            case "SELECT INTO": return IsTemp(i + 1, false);
+            case "TRUNCATE": return IsTemp(Skip(i + 1, "TABLE"), false);
+            case "ALTER": return Word(i + 1) == "TABLE" && IsTemp(i + 2, false);
+            case "CREATE":
+            {
+                if (Word(i + 1) == "TABLE") return IsTemp(i + 2, false);
+                var k = Skip(i + 1, "UNIQUE", "CLUSTERED", "NONCLUSTERED");
+                return Word(k) == "INDEX" && IsTemp(IndexTarget(k + 1), false);
+            }
+            case "DROP":
+            {
+                if (Word(i + 1) == "INDEX")
+                {
+                    var target = IndexTarget(Skip(i + 2, "IF", "EXISTS"));
+                    return IsTemp(target, false) && Word(target + 1) != ",";
+                }
+                if (Word(i + 1) != "TABLE") return false;
+                // DROP TABLE [IF EXISTS] #a, #b
+                for (var k = Skip(i + 2, "IF", "EXISTS"); ; k += 2)
+                {
+                    if (!IsTemp(k, false)) return false;
+                    if (Word(k + 1) != ",") return true;
+                }
+            }
+            default: return false;
+        }
     }
 
     /// <summary>SELECT … INTO creates a table; INSERT INTO is already caught by INSERT.</summary>

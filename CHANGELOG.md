@@ -3,6 +3,7 @@
 ## 1.5.5 (2026-11-24)
 
 - Query tabs show Azure SQL servers without the `.database.windows.net` suffix (e.g. `myserver.database.windows.net` shows as `myserver`). The full name is still shown in the tooltip and explorer.
+- Read-only groups no longer ask for confirmation when a script only writes to `#temp` tables or `@table` variables (`CREATE TABLE #t`, `INSERT INTO #t`, `SELECT … INTO #t`, `DROP TABLE IF EXISTS #t`, …).
 
 ## 1.5.4 (2026-11-24)
 - **Lock first column.** The new button next to Results/Messages keeps the first column visible while you scroll sideways, like Excel's Freeze First Column. It applies to every results grid and stays on until you close Sqlzilla.
