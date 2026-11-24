@@ -51,6 +51,7 @@ Use Windows Settings > Apps, or run the one-liner above with `-Uninstall`.
   - Copy results or save them as CSV.
 - **Results grid**: selection works like Excel.
   - Drag a box over cells, or click or drag row numbers and column headers. Shift extends the selection, Ctrl adds ranges, and the top-left corner selects everything.
+  - Row numbers and column headers stay visible while you scroll. The scroll bars sit outside the cells, so they don't cover any data.
   - Arrow keys, Ctrl+arrows, PageUp/PageDown and Home/End move the selection.
   - Ctrl+C copies the selection (Ctrl+Shift+C includes headers).
   - Drag a header edge to resize a column, including the row-number column. Double-click the edge to auto-fit.
