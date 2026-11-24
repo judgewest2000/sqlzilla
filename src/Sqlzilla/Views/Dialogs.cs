@@ -390,13 +390,18 @@ public static class Dialogs
             Padding = new Thickness(0),
         });
 
+        var about = new ScrollViewer { Content = panel };
         var dialog = new ContentDialog
         {
             XamlRoot = root,
-            Content = new ScrollViewer { Content = panel },
+            Content = about,
             CloseButtonText = "Close",
             DefaultButton = ContentDialogButton.Close,
         };
+
+        // WinUI shows one ContentDialog at a time, so release notes replace the About content rather than stacking.
+        var notesButton = new Button { Content = "Release notes" };
+        notesButton.Click += (_, _) => dialog.Content = BuildReleaseNotes(() => dialog.Content = about);
 
         UpdateInfo? found = null;
         var checkResult = new TextBlock { Foreground = Secondary, TextWrapping = TextWrapping.Wrap };
@@ -414,11 +419,62 @@ public static class Dialogs
             catch (Exception ex) { checkResult.Text = $"Couldn't check for updates: {ex.Message}"; }
             finally { checkButton.IsEnabled = true; }
         };
-        panel.Children.Add(checkButton);
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        buttons.Children.Add(checkButton);
+        buttons.Children.Add(notesButton);
+        panel.Children.Add(buttons);
         panel.Children.Add(checkResult);
 
         await dialog.ShowAsync();
         return found;
+    }
+
+    /// <summary>What changed in each version, read from the CHANGELOG.md shipped next to the exe.</summary>
+    private static FrameworkElement BuildReleaseNotes(Action back)
+    {
+        var panel = new StackPanel { Spacing = 4, Width = 420 };
+        var backButton = new HyperlinkButton { Content = "← Back to About", Padding = new Thickness(0) };
+        backButton.Click += (_, _) => back();
+        panel.Children.Add(backButton);
+        panel.Children.Add(new TextBlock { Text = "Release notes", Style = (Style)Application.Current.Resources["SubtitleTextBlockStyle"] });
+
+        IReadOnlyList<ReleaseNote> releases;
+        try { releases = ReleaseNotes.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "CHANGELOG.md"))); }
+        catch (IOException) { releases = []; }
+        if (releases.Count == 0)
+            panel.Children.Add(new TextBlock { Text = "Release notes aren't available.", Foreground = Secondary });
+
+        var current = UpdateService.CurrentVersion.ToString(3);
+        var code = (FontFamily)Application.Current.Resources["CodeFont"];
+        foreach (var release in releases)
+        {
+            var heading = new TextBlock { Margin = new Thickness(0, 12, 0, 2), Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] };
+            heading.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = $"Version {release.Version}" });
+            if (release.Date is not null)
+                heading.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = $"   {release.Date}", Foreground = Secondary, FontWeight = Microsoft.UI.Text.FontWeights.Normal });
+            if (release.Version == current)
+                heading.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = "   (this version)", Foreground = Secondary, FontWeight = Microsoft.UI.Text.FontWeights.Normal });
+            panel.Children.Add(heading);
+
+            foreach (var item in release.Items)
+            {
+                var line = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(12 + item.Level * 16, 0, 0, 0) };
+                line.Inlines.Add(new Microsoft.UI.Xaml.Documents.Run { Text = item.Level == 0 ? "•  " : "◦  " });
+                foreach (var span in item.Spans)
+                {
+                    var run = new Microsoft.UI.Xaml.Documents.Run { Text = span.Text };
+                    switch (span.Style)
+                    {
+                        case NoteStyle.Bold: run.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold; break;
+                        case NoteStyle.Italic: run.FontStyle = Windows.UI.Text.FontStyle.Italic; break;
+                        case NoteStyle.Code: run.FontFamily = code; break;
+                    }
+                    line.Inlines.Add(run);
+                }
+                panel.Children.Add(line);
+            }
+        }
+        return new ScrollViewer { Content = panel };
     }
 
     /// <summary>Asks to install an update; on accept downloads it, launches the installer and exits the app.</summary>

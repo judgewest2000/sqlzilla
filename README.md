@@ -91,7 +91,7 @@ Like Notepad++, open tabs are remembered between runs in `%LOCALAPPDATA%\Sqlzill
 
 ## Updates
 
-On startup, Sqlzilla checks GitHub for a newer release and asks whether to update. You can also use **Check for updates** in the About dialog.
+On startup, Sqlzilla checks GitHub for a newer release and asks whether to update. You can also use **Check for updates** in the About dialog. **Release notes** in the About dialog shows what changed in each version (from [CHANGELOG.md](CHANGELOG.md)).
 
 ## Build from source
 
@@ -104,7 +104,7 @@ Requires the .NET 9 SDK.
 
 ## Publish a release
 
-Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`) and the GitHub CLI.
+Requires [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`) and the GitHub CLI. First add the version's notes to the top of [CHANGELOG.md](CHANGELOG.md). It ships with the app and is shown under About > Release notes.
 
 ```powershell
 .\installer\build-installer.ps1 -Platform x64 -Version 1.0.1
