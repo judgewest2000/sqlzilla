@@ -17,7 +17,7 @@ namespace Sqlzilla.Views;
 /// <summary>
 /// Virtualised, read-only grid for one result set with Excel-style selection: drag a box over cells, click or drag
 /// row numbers and column headers, Shift extends, Ctrl adds ranges, the corner selects everything. Sticky header,
-/// frozen row numbers, scroll bars outside the cells, resizable columns (including row numbers), NULLs in grey, Ctrl+C (TSV) and CSV export.
+/// frozen row numbers, optional frozen first column, scroll bars outside the cells, resizable columns (including row numbers), NULLs in grey, Ctrl+C (TSV) and CSV export.
 /// </summary>
 public sealed partial class ResultGrid : UserControl
 {
@@ -40,17 +40,36 @@ public sealed partial class ResultGrid : UserControl
     private readonly HashSet<int> _manuallySized = new();   // column indexes; -1 is the row-number column
     private readonly TextBlock _truncatedNote;
 
+    /// <summary>App-wide and in-memory only: lasts until Sqlzilla closes.</summary>
+    public static bool FreezeFirstColumn
+    {
+        get => _freezeFirstColumn;
+        set
+        {
+            if (_freezeFirstColumn == value) return;
+            _freezeFirstColumn = value;
+            FreezeFirstColumnChanged?.Invoke();
+        }
+    }
+    private static bool _freezeFirstColumn;
+    public static event Action? FreezeFirstColumnChanged;
+
+    // Columns before _frozen live in the frozen pane beside the row numbers; the rest scroll.
+    private int _frozen;
+
     private readonly StackPanel _header;
+    private readonly StackPanel _frozenHeader;    // corner + frozen column headers
     private readonly ScrollViewer _headerScroll;
     private readonly ItemsRepeater _repeater;
-    private readonly ItemsRepeater _numbers;      // row numbers: scroll vertically with the rows but never sideways
+    private readonly ItemsRepeater _numbers;      // row numbers (+ frozen cells): scroll vertically with the rows but never sideways
     private readonly ScrollViewer _numberScroll;
     private readonly FrameworkElement _corner;
     private readonly ScrollBar _hBar;
     private readonly ScrollBar _vBar;
     private bool _syncingBars;
     private readonly Grid _content;
-    private readonly Rectangle _outline;
+    private readonly Border _outline;
+    private readonly Border _frozenOutline;
     private readonly ScrollViewer _scroll;
 
     private readonly GridSelection _selection = new();
@@ -86,13 +105,19 @@ public sealed partial class ResultGrid : UserControl
         IsTabStop = true;
         UseSystemFocusVisuals = false;
 
+        _frozen = Frozen;
         _header = new StackPanel { Orientation = Orientation.Horizontal, Height = RowHeight + 2, Background = _headerBackground };
+        _frozenHeader = new StackPanel { Orientation = Orientation.Horizontal, Height = RowHeight + 2, Background = _headerBackground };
         _corner = CreateCorner();
-        _header.PointerPressed += OnHeaderPointerPressed;
-        _header.PointerMoved += OnDragPointerMoved;
-        _header.PointerReleased += OnPointerReleased;
-        _header.PointerCaptureLost += (_, _) => EndDrag();
-        _header.RightTapped += OnRightTapped;
+        _frozenHeader.Children.Add(_corner);
+        foreach (var header in new[] { _header, _frozenHeader })
+        {
+            header.PointerPressed += OnHeaderPointerPressed;
+            header.PointerMoved += OnDragPointerMoved;
+            header.PointerReleased += OnPointerReleased;
+            header.PointerCaptureLost += (_, _) => EndDrag();
+            header.RightTapped += OnRightTapped;
+        }
         _headerScroll = new ScrollViewer
         {
             Content = _header,
@@ -124,9 +149,15 @@ public sealed partial class ResultGrid : UserControl
             VerticalAlignment = VerticalAlignment.Top,
         };
         _numbers.ElementPrepared += OnNumberPrepared;
+        _frozenOutline = new Border { BorderBrush = _accentBrush, Visibility = Visibility.Collapsed, IsHitTestVisible = false };
+        var frozenOverlay = new Canvas { IsHitTestVisible = false };
+        frozenOverlay.Children.Add(_frozenOutline);
+        var numbersContent = new Grid { HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+        numbersContent.Children.Add(_numbers);
+        numbersContent.Children.Add(frozenOverlay);
         _numberScroll = new ScrollViewer
         {
-            Content = _numbers,
+            Content = numbersContent,
             HorizontalScrollMode = ScrollMode.Disabled,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             VerticalScrollMode = ScrollMode.Disabled,
@@ -134,7 +165,7 @@ public sealed partial class ResultGrid : UserControl
             IsTabStop = false,
         };
 
-        _outline = new Rectangle { Stroke = _accentBrush, StrokeThickness = 2, Visibility = Visibility.Collapsed, IsHitTestVisible = false };
+        _outline = new Border { BorderBrush = _accentBrush, Visibility = Visibility.Collapsed, IsHitTestVisible = false };
         var overlay = new Canvas { IsHitTestVisible = false };
         overlay.Children.Add(_outline);
         _content = new Grid
@@ -180,7 +211,7 @@ public sealed partial class ResultGrid : UserControl
         _numberScroll.PointerCaptureLost += (_, _) => EndDrag();
         _numberScroll.RightTapped += OnRightTapped;
 
-        _hBar = new ScrollBar { Orientation = Orientation.Horizontal, IndicatorMode = ScrollingIndicatorMode.MouseIndicator, SmallChange = 40, Visibility = Visibility.Collapsed, Margin = new Thickness(_rowNumberWidth + 1, 2, 0, 0) };
+        _hBar = new ScrollBar { Orientation = Orientation.Horizontal, IndicatorMode = ScrollingIndicatorMode.MouseIndicator, SmallChange = 40, Visibility = Visibility.Collapsed };
         _vBar = new ScrollBar { Orientation = Orientation.Vertical, IndicatorMode = ScrollingIndicatorMode.MouseIndicator, SmallChange = RowHeight, Visibility = Visibility.Collapsed, Margin = new Thickness(2, RowHeight + 3, 0, 0) };
         foreach (var bar in new[] { _hBar, _vBar })
         {
@@ -196,8 +227,18 @@ public sealed partial class ResultGrid : UserControl
             _scroll.RegisterPropertyChangedCallback(dp, (_, _) => SyncScrollBars());
 
         _autoScroll.Tick += OnAutoScrollTick;
+        UpdateHBarMargin();
         KeyDown += OnGridKeyDown;
-        Unloaded += (_, _) => _autoScroll.Stop();
+        Loaded += (_, _) =>
+        {
+            FreezeFirstColumnChanged += ApplyFreeze;
+            ApplyFreeze();
+        };
+        Unloaded += (_, _) =>
+        {
+            FreezeFirstColumnChanged -= ApplyFreeze;
+            _autoScroll.Stop();
+        };
 
         var box = new Grid
         {
@@ -214,7 +255,7 @@ public sealed partial class ResultGrid : UserControl
         Grid.SetRow(_numberScroll, 1);
         Grid.SetRow(_scroll, 1);
         Grid.SetColumn(_scroll, 1);
-        box.Children.Add(_corner);
+        box.Children.Add(_frozenHeader);
         box.Children.Add(_headerScroll);
         box.Children.Add(_numberScroll);
         box.Children.Add(_scroll);
@@ -310,7 +351,28 @@ public sealed partial class ResultGrid : UserControl
         return Ruler.DesiredSize.Width;
     }
 
-    private double TotalWidth => _widths.Sum();
+    private int Frozen => FreezeFirstColumn && _set.Columns.Count > 1 ? 1 : 0;
+
+    private void ApplyFreeze()
+    {
+        if (Frozen == _frozen) return;
+        _frozen = Frozen;
+        BuildHeader();
+        UpdateContentSize();
+        UpdateHBarMargin();
+        // Re-prepare every row so cells move between the frozen and scrolling panes.
+        _repeater.ItemsSource = null;
+        _repeater.ItemsSource = _rows;
+        _numbers.ItemsSource = null;
+        _numbers.ItemsSource = _rows;
+        RefreshSelection();
+    }
+
+    private double FrozenColumnsWidth => _widths.Take(_frozen).Sum();
+
+    private void UpdateHBarMargin() => _hBar.Margin = new Thickness(_rowNumberWidth + FrozenColumnsWidth + 1, 2, 0, 0);
+
+    private double TotalWidth => _widths.Skip(_frozen).Sum();
 
     private void UpdateContentSize()
     {
@@ -365,22 +427,30 @@ public sealed partial class ResultGrid : UserControl
         return false;
     }
 
+    /// <summary>Left edge of a scrolling column in the cells' content coordinates.</summary>
     private double ColumnLeft(int column)
     {
         var x = 0.0;
-        for (var i = 0; i < column; i++) x += _widths[i];
+        for (var i = _frozen; i < column; i++) x += _widths[i];
         return x;
     }
+
+    /// <summary>Left edge of a frozen column in the frozen pane (after the row numbers).</summary>
+    private double FrozenLeft(int column) => _rowNumberWidth + _widths.Take(column).Sum();
+
+    private Panel HeaderCell(int column) =>
+        (Panel)(column < _frozen ? _frozenHeader.Children[1 + column] : _header.Children[column - _frozen]);
 
     // ------------------------------------------------------------------ header
 
     private void BuildHeader()
     {
         _header.Children.Clear();
+        while (_frozenHeader.Children.Count > 1) _frozenHeader.Children.RemoveAt(1);
         for (var i = 0; i < _set.Columns.Count; i++)
         {
             var column = _set.Columns[i];
-            var cell = new Grid { Width = _widths[i], BorderBrush = _gridLine, BorderThickness = new Thickness(0, 0, 1, 1) };
+            var cell = new Grid { Width = _widths[i], BorderBrush = _gridLine, BorderThickness = new Thickness(0, 0, i == _frozen - 1 ? 2 : 1, 1) };
             var text = new TextBlock
             {
                 Text = column.Name.Length > 0 ? column.Name : "(No column name)",
@@ -393,7 +463,7 @@ public sealed partial class ResultGrid : UserControl
             ToolTipService.SetToolTip(cell, $"{text.Text} ({column.TypeName})");
             cell.Children.Add(text);
             cell.Children.Add(CreateResizeGrip(i));
-            _header.Children.Add(cell);
+            (i < _frozen ? _frozenHeader : _header).Children.Add(cell);
         }
     }
 
@@ -486,17 +556,18 @@ public sealed partial class ResultGrid : UserControl
         {
             _rowNumberWidth = width;
             _corner.Width = width;
-            _hBar.Margin = new Thickness(width + 1, 2, 0, 0);
             foreach (var panel in RealisedRows(_numbers))
                 if (panel.Children.Count > 0 && panel.Children[0] is FrameworkElement number) number.Width = width;
         }
         else
         {
             _widths[column] = width;
-            if (_header.Children[column] is FrameworkElement h) h.Width = width;
-            foreach (var panel in RealisedRows(_repeater))
-                if (panel.Children.Count > column && panel.Children[column] is FrameworkElement cell) cell.Width = width;
+            HeaderCell(column).Width = width;
+            var (repeater, index) = column < _frozen ? (_numbers, 1 + column) : (_repeater, column - _frozen);
+            foreach (var panel in RealisedRows(repeater))
+                if (panel.Children.Count > index && panel.Children[index] is FrameworkElement cell) cell.Width = width;
         }
+        UpdateHBarMargin();
         UpdateContentSize();
         UpdateOutline();
     }
@@ -516,12 +587,12 @@ public sealed partial class ResultGrid : UserControl
         var row = _set.Rows[args.Index];
         panel.Height = RowHeight;
 
-        var cellCount = _set.Columns.Count;
+        var cellCount = _set.Columns.Count - _frozen;
         while (panel.Children.Count < cellCount) panel.Children.Add(CreateCell());
         while (panel.Children.Count > cellCount) panel.Children.RemoveAt(panel.Children.Count - 1);
 
-        for (var c = 0; c < _set.Columns.Count; c++)
-            SetCell((Border)panel.Children[c], _widths[c], row[c], isRowNumber: false);
+        for (var c = _frozen; c < _set.Columns.Count; c++)
+            SetCell((Border)panel.Children[c - _frozen], _widths[c], row[c], isRowNumber: false);
         ApplySelection(panel, args.Index);
     }
 
@@ -529,8 +600,17 @@ public sealed partial class ResultGrid : UserControl
     {
         if (args.Element is not StackPanel panel || args.Index < 0 || args.Index >= _set.Rows.Count) return;
         panel.Height = RowHeight;
-        if (panel.Children.Count == 0) panel.Children.Add(CreateCell());
+        while (panel.Children.Count < 1 + _frozen) panel.Children.Add(CreateCell());
+        while (panel.Children.Count > 1 + _frozen) panel.Children.RemoveAt(panel.Children.Count - 1);
         SetCell((Border)panel.Children[0], _rowNumberWidth, (args.Index + 1).ToString("N0"), isRowNumber: true);
+        var row = _set.Rows[args.Index];
+        for (var c = 0; c < _frozen; c++)
+        {
+            var cell = (Border)panel.Children[1 + c];
+            SetCell(cell, _widths[c], row[c], isRowNumber: false);
+            // A heavier line marks where the frozen columns end, like Excel's freeze panes.
+            cell.BorderThickness = new Thickness(0, 0, c == _frozen - 1 ? 2 : 1, 1);
+        }
         ApplyNumberSelection(panel, args.Index);
     }
 
@@ -568,19 +648,23 @@ public sealed partial class ResultGrid : UserControl
 
     private void ApplySelection(StackPanel panel, int row)
     {
-        for (var c = 0; c < _set.Columns.Count && c < panel.Children.Count; c++)
-            ((Border)panel.Children[c]).Background = _selection.Contains(row, c) ? _selectedBrush : null;
+        for (var c = _frozen; c < _set.Columns.Count && c - _frozen < panel.Children.Count; c++)
+            ((Border)panel.Children[c - _frozen]).Background = _selection.Contains(row, c) ? _selectedBrush : null;
     }
 
-    private void ApplyNumberSelection(StackPanel panel, int row) =>
+    private void ApplyNumberSelection(StackPanel panel, int row)
+    {
         ((Border)panel.Children[0]).Background = _selection.RowTouched(row) ? _headerSelectedBrush : _headerBackground;
+        for (var c = 0; c < _frozen && 1 + c < panel.Children.Count; c++)
+            ((Border)panel.Children[1 + c]).Background = _selection.Contains(row, c) ? _selectedBrush : null;
+    }
 
     private void RefreshSelection()
     {
         foreach (var panel in RealisedRows(_repeater)) ApplySelection(panel, _repeater.GetElementIndex(panel));
         foreach (var panel in RealisedRows(_numbers)) ApplyNumberSelection(panel, _numbers.GetElementIndex(panel));
         for (var c = 0; c < _set.Columns.Count; c++)
-            if (_header.Children[c] is Panel cell) cell.Background = _selection.ColumnTouched(c) ? _headerSelectedBrush : null;
+            HeaderCell(c).Background = _selection.ColumnTouched(c) ? _headerSelectedBrush : null;
         UpdateOutline();
     }
 
@@ -589,17 +673,31 @@ public sealed partial class ResultGrid : UserControl
         if (_selection.IsEmpty || _set.Rows.Count == 0)
         {
             _outline.Visibility = Visibility.Collapsed;
+            _frozenOutline.Visibility = Visibility.Collapsed;
             return;
         }
         var r = _selection.Ranges[^1];
         var top = Math.Max(0, r.Top);
         var bottom = Math.Min(_set.Rows.Count - 1, r.Bottom);
-        var left = ColumnLeft(r.Left);
-        Canvas.SetLeft(_outline, left - 1);
-        Canvas.SetTop(_outline, top * RowHeight - 1);
-        _outline.Width = ColumnLeft(r.Right + 1) - left + 1;
-        _outline.Height = (bottom - top + 1) * RowHeight + 1;
-        _outline.Visibility = Visibility.Visible;
+        var height = (bottom - top + 1) * RowHeight + 1;
+
+        // A range across the frozen edge is drawn in two parts, with no border where they meet.
+        var inFrozen = r.Left < _frozen;
+        var inScrolling = r.Right >= _frozen;
+        Place(_frozenOutline, inFrozen, () => FrozenLeft(r.Left), () => FrozenLeft(Math.Min(r.Right, _frozen - 1) + 1), 2, inScrolling ? 0 : 2);
+        Place(_outline, inScrolling, () => ColumnLeft(Math.Max(r.Left, _frozen)), () => ColumnLeft(r.Right + 1), inFrozen ? 0 : 2, 2);
+
+        void Place(Border outline, bool show, Func<double> left, Func<double> right, double leftEdge, double rightEdge)
+        {
+            outline.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            if (!show) return;
+            var x = left();
+            Canvas.SetLeft(outline, x - 1);
+            Canvas.SetTop(outline, top * RowHeight - 1);
+            outline.Width = right() - x + 1;
+            outline.Height = height;
+            outline.BorderThickness = new Thickness(leftEdge, 2, rightEdge, 2);
+        }
     }
 
     // ------------------------------------------------------------------ mouse selection
@@ -607,10 +705,10 @@ public sealed partial class ResultGrid : UserControl
     private static bool IsDown(VirtualKey key) =>
         Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(key).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
 
-    /// <summary>Column under a content x coordinate (row numbers are outside the content).</summary>
+    /// <summary>Scrolling column under a content x coordinate (row numbers and frozen columns are outside the content).</summary>
     private int ColumnAt(double x)
     {
-        for (var i = 0; i < _widths.Length; i++)
+        for (var i = _frozen; i < _widths.Length; i++)
         {
             if (x < _widths[i]) return i;
             x -= _widths[i];
@@ -622,8 +720,15 @@ public sealed partial class ResultGrid : UserControl
     {
         var y = viewport.Y + _scroll.VerticalOffset;
         var row = Math.Clamp((int)Math.Floor(y / RowHeight), 0, Math.Max(0, _set.Rows.Count - 1));
-        // Left of the cells is the frozen row-number column.
-        return (row, viewport.X < 0 ? -1 : ColumnAt(viewport.X + _scroll.HorizontalOffset));
+        // Left of the cells are the frozen columns, then the row numbers (-1).
+        if (viewport.X >= 0) return (row, ColumnAt(viewport.X + _scroll.HorizontalOffset));
+        var x = viewport.X + FrozenColumnsWidth;
+        for (var c = 0; c < _frozen; c++)
+        {
+            if (x >= 0 && x < _widths[c]) return (row, c);
+            x -= _widths[c];
+        }
+        return (row, -1);
     }
 
     private CellRange RangeFor(DragMode mode, (int Row, int Column) a, (int Row, int Column) b) => mode switch
@@ -679,9 +784,11 @@ public sealed partial class ResultGrid : UserControl
     private void OnHeaderPointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (_set.Columns.Count == 0) return;
+        var viewport = e.GetCurrentPoint(_scroll).Position;
+        var column = HitTest(viewport).Column;
+        if (column < 0) return;
         var point = e.GetCurrentPoint(_header);
         ClaimFocus();
-        var column = ColumnAt(point.Position.X);
         if (point.Properties.IsRightButtonPressed)
         {
             if (!_selection.ColumnTouched(column)) Begin(DragMode.Columns, 0, column, false, false);
@@ -691,8 +798,8 @@ public sealed partial class ResultGrid : UserControl
 
         Begin(DragMode.Columns, 0, column, IsDown(VirtualKey.Shift), IsDown(VirtualKey.Control));
         _drag = DragMode.Columns;
-        _dragViewportPoint = e.GetCurrentPoint(_scroll).Position;
-        _header.CapturePointer(e.Pointer);
+        _dragViewportPoint = viewport;
+        ((UIElement)sender).CapturePointer(e.Pointer);
         e.Handled = true;
     }
 
@@ -746,6 +853,7 @@ public sealed partial class ResultGrid : UserControl
         _scroll.ReleasePointerCaptures();
         _numberScroll.ReleasePointerCaptures();
         _header.ReleasePointerCaptures();
+        _frozenHeader.ReleasePointerCaptures();
     }
 
     // ------------------------------------------------------------------ keyboard
@@ -808,7 +916,8 @@ public sealed partial class ResultGrid : UserControl
             : null;
         var left = ColumnLeft(column);
         var right = ColumnLeft(column + 1);
-        double? h = left < _scroll.HorizontalOffset ? left
+        double? h = column < _frozen ? null
+            : left < _scroll.HorizontalOffset ? left
             : right > _scroll.HorizontalOffset + _scroll.ViewportWidth ? right - _scroll.ViewportWidth
             : null;
         if (v != null || h != null) _scroll.ChangeView(h, v, null, true);

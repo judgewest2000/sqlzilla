@@ -1,5 +1,8 @@
 # Release notes
 
+## 1.5.4 (2026-11-24)
+- **Lock first column.** The new button next to Results/Messages keeps the first column visible while you scroll sideways, like Excel's Freeze First Column. It applies to every results grid and stays on until you close Sqlzilla.
+
 ## 1.5.3 (2026-11-24)
 - **Release notes** in About show what changed in each version.
 

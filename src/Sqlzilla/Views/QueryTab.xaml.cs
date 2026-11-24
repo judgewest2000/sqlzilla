@@ -58,6 +58,12 @@ public sealed partial class QueryTab : UserControl
         ServerText.Text = server.ResolvedServer;
         ApplyGroup();
         Loaded += OnFirstLoaded;
+        Loaded += (_, _) =>
+        {
+            ResultGrid.FreezeFirstColumnChanged += SyncFreezeToggle;
+            SyncFreezeToggle();
+        };
+        Unloaded += (_, _) => ResultGrid.FreezeFirstColumnChanged -= SyncFreezeToggle;
     }
 
     public ServerGroup Group { get; private set; }
@@ -509,11 +515,18 @@ public sealed partial class QueryTab : UserControl
 
     private void ResultTabs_SelectionChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args) => UpdateResultTabs();
 
+    private void FreezeColumnToggle_Changed(object sender, RoutedEventArgs e) =>
+        ResultGrid.FreezeFirstColumn = FreezeColumnToggle.IsChecked == true;
+
+    // The lock is app-wide, so every tab's button follows whichever one was clicked.
+    private void SyncFreezeToggle() => FreezeColumnToggle.IsChecked = ResultGrid.FreezeFirstColumn;
+
     private void UpdateResultTabs()
     {
         var showResults = ResultTabs.SelectedItem != MessagesTabItem;
         ResultsHost.Visibility = showResults ? Visibility.Visible : Visibility.Collapsed;
         MessagesHost.Visibility = showResults ? Visibility.Collapsed : Visibility.Visible;
+        FreezeColumnToggle.Visibility = ResultsHost.Visibility;
     }
 
     private void ToggleResults()

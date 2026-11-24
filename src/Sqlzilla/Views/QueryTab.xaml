@@ -79,10 +79,20 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
                 </Grid.RowDefinitions>
-                <SelectorBar x:Name="ResultTabs" SelectionChanged="ResultTabs_SelectionChanged">
-                    <SelectorBarItem x:Name="ResultsTabItem" Text="Results"                     Icon="ViewAll" IsSelected="True" />
-                                        <SelectorBarItem x:Name="MessagesTabItem" Text="Messages" Icon="Message" />
-                </SelectorBar>
+                <StackPanel Orientation="Horizontal" Spacing="12">
+                    <SelectorBar x:Name="ResultTabs" SelectionChanged="ResultTabs_SelectionChanged">
+                        <SelectorBarItem x:Name="ResultsTabItem" Text="Results"                     Icon="ViewAll" IsSelected="True" />
+                                            <SelectorBarItem x:Name="MessagesTabItem" Text="Messages" Icon="Message" />
+                    </SelectorBar>
+                    <ToggleButton x:Name="FreezeColumnToggle" VerticalAlignment="Center" Padding="8,4"
+                                  Checked="FreezeColumnToggle_Changed" Unchecked="FreezeColumnToggle_Changed"
+                                  ToolTipService.ToolTip="Keep the first column visible while you scroll sideways (like Excel's Freeze First Column)">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon Glyph="&#xE72E;" FontSize="14" />
+                            <TextBlock Text="Lock first column" />
+                        </StackPanel>
+                    </ToggleButton>
+                </StackPanel>
                                     <Grid x:Name="ResultsHost" Grid.Row="1" />
                 <Border x:Name="MessagesHost" Grid.Row="1" CornerRadius="4" BorderThickness="1"
                         BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" Background="{ThemeResource LayerFillColorDefaultBrush}">
