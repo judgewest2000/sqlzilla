@@ -21,6 +21,7 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 DisableProgramGroupPage=yes
+ChangesAssociations=yes
 SetupIconFile=..\src\Sqlzilla\Assets\AppIcon.ico
 #if Arch == "x64"
 ArchitecturesAllowed=x64compatible
@@ -41,6 +42,7 @@ Name: "{autodesktop}\Sqlzilla"; Filename: "{app}\Sqlzilla.exe"; Tasks: desktopic
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; Flags: unchecked
+Name: "sqlassoc"; Description: "Open .sql files with Sqlzilla by default"; Flags: unchecked
 
 [Run]
 Filename: "{app}\Sqlzilla.exe"; Description: "Launch Sqlzilla"; Flags: nowait postinstall skipifsilent
@@ -49,6 +51,16 @@ Filename: "{app}\Sqlzilla.exe"; Flags: nowait runasoriginaluser; Check: ShouldRe
 [Registry]
 ; Remove the Apps & Features entry written by install.ps1 so only this installer's entry remains.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Uninstall\Sqlzilla"; Flags: deletekey
+; .sql files: always offer Sqlzilla under "Open with"; the sqlassoc task also makes it the default.
+; (If the user has already picked a default in Windows, Windows asks them which app to use next time.)
+Root: HKCU; Subkey: "Software\Classes\Sqlzilla.sql"; ValueType: string; ValueData: "SQL Script"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Sqlzilla.sql\DefaultIcon"; ValueType: string; ValueData: """{app}\Sqlzilla.exe"",0"
+Root: HKCU; Subkey: "Software\Classes\Sqlzilla.sql\shell\open\command"; ValueType: string; ValueData: """{app}\Sqlzilla.exe"" ""%1"""
+Root: HKCU; Subkey: "Software\Classes\.sql\OpenWithProgids"; ValueType: string; ValueName: "Sqlzilla.sql"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.sql"; ValueType: string; ValueData: "Sqlzilla.sql"; Flags: uninsdeletevalue; Tasks: sqlassoc
+Root: HKCU; Subkey: "Software\Classes\Applications\Sqlzilla.exe"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "Sqlzilla"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Applications\Sqlzilla.exe\SupportedTypes"; ValueType: string; ValueName: ".sql"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\Applications\Sqlzilla.exe\shell\open\command"; ValueType: string; ValueData: """{app}\Sqlzilla.exe"" ""%1"""
 
 [Code]
 function ShouldRelaunch: Boolean;

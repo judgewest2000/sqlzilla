@@ -1,0 +1,332 @@
+using System.Collections.ObjectModel;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
+using Sqlzilla.Models;
+using Sqlzilla.Services;
+using Sqlzilla.Views;
+using Windows.System;
+
+namespace Sqlzilla;
+
+// Explorer search, and opening .sql files from Explorer / the command line.
+public sealed partial class MainWindow
+{
+    private string _explorerFilter = "";
+    private HashSet<string> _expandedBeforeSearch = new();
+    private readonly HashSet<string> _searchLoads = new();
+    private readonly List<string> _pendingFiles = new();   // opened from Explorer before any server existed
+    private readonly SemaphoreSlim _openFilesGate = new(1, 1);
+
+    /// <summary>Raised when background searches add database lists to the cache.</summary>
+    private event Action? DatabaseListsChanged;
+
+    // ------------------------------------------------------------------ explorer search
+
+    private void ExplorerSearch_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        var filter = ExplorerSearch.Text.Trim();
+        if (filter == _explorerFilter) return;
+        if (_explorerFilter.Length == 0) _expandedBeforeSearch = ExpandedIds();
+        _explorerFilter = filter;
+        RebuildTree(expanded: filter.Length == 0 ? _expandedBeforeSearch : null);
+        if (filter.Length > 0) LoadDatabaseListsForSearch();
+    }
+
+    private void ExplorerSearch_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case VirtualKey.Escape when ExplorerSearch.Text.Length > 0:
+                ExplorerSearch.Text = "";
+                e.Handled = true;
+                break;
+            case VirtualKey.Enter when Flatten(RootEntries).FirstOrDefault(x => x.IsQueryTarget) is { } first:
+                OpenQuery(first);
+                e.Handled = true;
+                break;
+            case VirtualKey.Down when RootEntries.Count > 0:
+                ServerTree.Focus(FocusState.Keyboard);
+                e.Handled = true;
+                break;
+        }
+    }
+
+    private void SearchAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        ExplorerSearch.Focus(FocusState.Keyboard);
+        ExplorerSearch.SelectAll();
+    }
+
+    private void OnDatabaseListsChanged()
+    {
+        if (_explorerFilter.Length > 0) RebuildTree();
+    }
+
+    /// <summary>
+    /// Fetches database lists so searches can find databases on servers that haven't been expanded yet.
+    /// Skips interactive Entra sign-in, which would pop up a login window just because someone typed in the search box.
+    /// </summary>
+    private void LoadDatabaseListsForSearch()
+    {
+        foreach (var group in _groups)
+            foreach (var server in group.Servers)
+            {
+                if (server.HasDatabase || server.AuthMode == AuthMode.EntraInteractive || _databaseCache.ContainsKey(server.Id)) continue;
+                if (_searchLoads.Add(server.Id)) _ = LoadDatabaseListAsync(group, server);
+            }
+    }
+
+    private async Task LoadDatabaseListAsync(ServerGroup group, ServerConnection server)
+    {
+        try
+        {
+            _databaseCache[server.Id] = await Task.Run(() => ConnectionFactory.ListDatabasesAsync(server, group.IsReadOnly, CancellationToken.None));
+        }
+        catch { return; }   // unreachable servers show their error when expanded
+        DatabaseListsChanged?.Invoke();
+    }
+
+    // ------------------------------------------------------------------ opening files
+
+    /// <summary>Opens files passed on the command line or from Explorer, asking which server/database to use.</summary>
+    public void OpenFiles(IReadOnlyList<string> paths, bool bringToFront)
+    {
+        if (bringToFront) BringToFront();
+        if (paths.Count == 0) return;
+        if (!Root.IsLoaded)
+        {
+            Root.Loaded += OpenWhenLoaded;
+            return;
+        }
+        _ = OpenFilesAsync(paths, null);
+
+        void OpenWhenLoaded(object sender, RoutedEventArgs e)
+        {
+            Root.Loaded -= OpenWhenLoaded;
+            _ = OpenFilesAsync(paths, null);
+        }
+    }
+
+    /// <summary>Opens the files on <paramref name="connection"/>, or on one picked by the user when null.</summary>
+    private async Task OpenFilesAsync(IReadOnlyList<string> paths, (ServerGroup Group, ServerConnection Server, string Database)? connection)
+    {
+        // One picker at a time when several files arrive separately (Explorer launches once per selected file).
+        await _openFilesGate.WaitAsync();
+        try { await OpenFilesCoreAsync(paths, connection); }
+        catch (Exception ex) { await Dialogs.ShowErrorAsync(XamlRoot, "Couldn't open file", ex.Message); }
+        finally { _openFilesGate.Release(); }
+    }
+
+    private async Task OpenFilesCoreAsync(IReadOnlyList<string> paths, (ServerGroup Group, ServerConnection Server, string Database)? connection)
+    {
+        var toOpen = new List<string>();
+        foreach (var path in paths.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var open = OpenQueries.FirstOrDefault(q => string.Equals(q.Query.FilePath, path, StringComparison.OrdinalIgnoreCase));
+            if (open.Tab != null) Tabs.SelectedItem = open.Tab;
+            else toOpen.Add(path);
+        }
+        if (toOpen.Count == 0) return;
+
+        if (!_groups.Any(g => g.Servers.Count > 0))
+        {
+            var firstAsk = _pendingFiles.Count == 0;
+            _pendingFiles.AddRange(toOpen.Where(p => !_pendingFiles.Contains(p, StringComparer.OrdinalIgnoreCase)));
+            if (firstAsk && await Dialogs.ConfirmAsync(XamlRoot, "Add a server first",
+                    $"Query windows always run against a server. Add one and {Describe(toOpen)} will open on it.", "Add server"))
+                NewServer_Click(this, new RoutedEventArgs());
+            return;
+        }
+
+        connection ??= await PickConnectionAsync(toOpen);
+        if (connection is not var (group, server, database)) return;
+
+        foreach (var path in toOpen)
+        {
+            string text;
+            try { text = await File.ReadAllTextAsync(path); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                await Dialogs.ShowErrorAsync(XamlRoot, "Couldn't open file", ex.Message);
+                continue;
+            }
+            _lastServerId = server.Id;
+            var query = new QueryTab(group, server, database);
+            query.LoadFile(path, text);
+            AddTab(query);
+        }
+    }
+
+    /// <summary>After the first server is added, opens files that arrived while there was nothing to connect to.</summary>
+    private async Task OpenPendingFilesAsync()
+    {
+        if (_pendingFiles.Count == 0 || DefaultConnection() is not { } connection) return;
+        var files = _pendingFiles.ToList();
+        _pendingFiles.Clear();
+        await OpenFilesAsync(files, connection);
+    }
+
+    private static string Describe(IReadOnlyList<string> paths) =>
+        paths.Count == 1 ? Path.GetFileName(paths[0]) : $"{paths.Count} files";
+
+    /// <summary>A searchable copy of the server explorer for choosing where a script will run.</summary>
+    private async Task<(ServerGroup Group, ServerConnection Server, string Database)?> PickConnectionAsync(IReadOnlyList<string> paths)
+    {
+        var entries = new ObservableCollection<ExplorerEntry>();
+        var search = new TextBox { PlaceholderText = "Search servers and databases" };
+        var tree = new TreeView
+        {
+            ItemsSource = entries,
+            ItemTemplate = (DataTemplate)Root.Resources["ExplorerItemTemplate"],
+            SelectionMode = TreeViewSelectionMode.Single,
+            CanDragItems = false,
+            AllowDrop = false,
+            Height = 360,
+        };
+        var empty = new TextBlock
+        {
+            Margin = new Thickness(12),
+            Visibility = Visibility.Collapsed,
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+        };
+        var intro = new TextBlock
+        {
+            Text = paths.Count == 1 ? paths[0] : string.Join(Environment.NewLine, paths.Select(Path.GetFileName)),
+            TextWrapping = TextWrapping.Wrap,
+            FontSize = 12,
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+        };
+        var treeHost = new Grid();
+        treeHost.Children.Add(tree);
+        treeHost.Children.Add(empty);
+        var panel = new StackPanel { Spacing = 8, Width = 440 };
+        panel.Children.Add(intro);
+        panel.Children.Add(search);
+        panel.Children.Add(treeHost);
+
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = $"Open {Describe(paths)} on…",
+            Content = panel,
+            PrimaryButtonText = "Open",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            IsPrimaryButtonEnabled = false,
+        };
+
+        ExplorerEntry? Target(object? item) => item is ExplorerEntry { Server: not null } e && e.Kind != ExplorerEntryKind.Placeholder ? e : null;
+        ExplorerEntry? chosen = null;
+
+        void Select(ExplorerEntry? entry)
+        {
+            tree.SelectedItem = entry;
+            dialog.IsPrimaryButtonEnabled = Target(entry) != null;
+            // The highlight only shows once the item's container exists, so select again after layout.
+            tree.DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                if (entry == null || !(ReferenceEquals(tree.SelectedItem, entry) || tree.SelectedItem == null)) return;
+                tree.SelectedItem = null;   // re-assigning the same item is a no-op
+                tree.SelectedItem = entry;
+            });
+        }
+
+        void Refresh()
+        {
+            var selectedId = (tree.SelectedItem as ExplorerEntry)?.Id;
+            var filter = search.Text.Trim();
+            entries.Clear();
+            foreach (var entry in BuildExplorerEntries(filter, new HashSet<string>(), expandGroups: true)) entries.Add(entry);
+            empty.Text = $"Nothing matches \u201C{filter}\u201D.";
+            empty.Visibility = entries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            var all = Flatten(entries).ToList();
+            Select(all.FirstOrDefault(e => e.Id == selectedId) ?? (filter.Length > 0 ? all.FirstOrDefault(e => e.IsQueryTarget) : null));
+        }
+
+        void Choose(ExplorerEntry entry)
+        {
+            chosen = entry;
+            dialog.Hide();
+        }
+
+        Refresh();
+        // Start on the connection a new query would use: the selected server/database, the current tab's, or the last used.
+        if (DefaultConnection() is var (_, defaultServer, defaultDatabase))
+        {
+            var serverEntry = Flatten(entries).FirstOrDefault(e => e.Kind == ExplorerEntryKind.Server && e.Server!.Id == defaultServer.Id);
+            var databaseEntry = serverEntry?.Children.FirstOrDefault(e => e.Kind == ExplorerEntryKind.Database &&
+                string.Equals(e.Database, defaultDatabase, StringComparison.OrdinalIgnoreCase));
+            if (databaseEntry != null) serverEntry!.IsExpanded = true;
+            Select(databaseEntry ?? serverEntry);
+        }
+
+        void OnListsChanged() { if (search.Text.Trim().Length > 0) Refresh(); }
+        DatabaseListsChanged += OnListsChanged;
+
+        search.TextChanged += (_, _) =>
+        {
+            Refresh();
+            if (search.Text.Trim().Length > 0) LoadDatabaseListsForSearch();
+        };
+        search.KeyDown += (_, e) =>
+        {
+            if (e.Key == VirtualKey.Enter && Target(tree.SelectedItem) is { } target)
+            {
+                e.Handled = true;
+                Choose(target);
+            }
+            else if (e.Key == VirtualKey.Down && entries.Count > 0)
+            {
+                e.Handled = true;
+                tree.Focus(FocusState.Keyboard);
+            }
+        };
+        tree.SelectionChanged += (_, _) => dialog.IsPrimaryButtonEnabled = Target(tree.SelectedItem) != null;
+        tree.Expanding += (sender, e) =>
+        {
+            if (e.Item is ExplorerEntry { Kind: ExplorerEntryKind.Server } server) _ = LoadDatabasesAsync(server, false);
+        };
+        tree.ItemInvoked += (_, e) =>
+        {
+            if (e.InvokedItem is ExplorerEntry entry && (entry.Kind == ExplorerEntryKind.Group || (entry.Kind == ExplorerEntryKind.Server && !entry.Server!.HasDatabase)))
+                entry.IsExpanded = !entry.IsExpanded;
+        };
+        tree.DoubleTapped += (_, e) =>
+        {
+            for (var d = e.OriginalSource as DependencyObject; d != null; d = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(d))
+            {
+                if (d is not TreeViewItem item) continue;
+                if (Target(tree.ItemFromContainer(item)) is { IsQueryTarget: true } target)
+                {
+                    e.Handled = true;
+                    Choose(target);
+                }
+                return;
+            }
+        };
+        dialog.PrimaryButtonClick += (_, _) => chosen = Target(tree.SelectedItem);
+        dialog.Opened += (_, _) => search.Focus(FocusState.Programmatic);
+
+        try
+        {
+            await Dialogs.WhenNoDialogOpenAsync(XamlRoot);
+            await dialog.ShowAsync();
+        }
+        finally { DatabaseListsChanged -= OnListsChanged; }
+
+        return chosen is { } c ? (c.Group, c.Server!, c.TargetDatabase) : null;
+    }
+
+    private void BringToFront()
+    {
+        if (AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter { State: Microsoft.UI.Windowing.OverlappedPresenterState.Minimized } presenter)
+            presenter.Restore();
+        Activate();
+        SetForegroundWindow(Handle);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hwnd);
+}

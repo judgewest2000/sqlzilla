@@ -12,6 +12,7 @@ param(
     [string]$Repo = 'judgewest2000/sqlzilla',
     [string]$Version = 'latest',
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'Programs\Sqlzilla'),
+    [switch]$AssociateSqlFiles,
     [switch]$Uninstall
 )
 
@@ -23,6 +24,44 @@ $appName = 'Sqlzilla'
 $exeName = 'Sqlzilla.exe'
 $startMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\$appName.lnk"
 $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$appName"
+$classes = 'HKCU:\Software\Classes'
+$progId = "$appName.sql"
+
+function Send-AssocChanged {
+    Add-Type -Namespace Sqlzilla -Name Shell -MemberDefinition '[DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId, uint flags, IntPtr item1, IntPtr item2);'
+    [Sqlzilla.Shell]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)   # SHCNE_ASSOCCHANGED
+}
+
+# Always lists Sqlzilla under "Open with" for .sql; -AssociateSqlFiles also makes it the default.
+function Register-SqlFiles([string]$exePath, [bool]$makeDefault) {
+    # New-Item -Force on an existing key wipes its values (e.g. other apps' OpenWithProgids), so only create missing keys.
+    function Set-Value([string]$key, [string]$name, [string]$value) {
+        if (-not (Test-Path $key)) { New-Item -Path $key -Force | Out-Null }
+        New-ItemProperty -Path $key -Name $name -Value $value -PropertyType String -Force | Out-Null
+    }
+    $open = "`"$exePath`" `"%1`""
+    Set-Value "$classes\$progId" '(default)' 'SQL Script'
+    Set-Value "$classes\$progId\DefaultIcon" '(default)' "`"$exePath`",0"
+    Set-Value "$classes\$progId\shell\open\command" '(default)' $open
+    Set-Value "$classes\.sql\OpenWithProgids" $progId ''
+    if ($makeDefault) { Set-Value "$classes\.sql" '(default)' $progId }
+    Set-Value "$classes\Applications\$exeName" 'FriendlyAppName' $appName
+    Set-Value "$classes\Applications\$exeName\SupportedTypes" '.sql' ''
+    Set-Value "$classes\Applications\$exeName\shell\open\command" '(default)' $open
+    Send-AssocChanged
+}
+
+function Unregister-SqlFiles {
+    foreach ($key in "$classes\$progId", "$classes\Applications\$exeName") {
+        if (Test-Path $key) { Remove-Item $key -Recurse -Force }
+    }
+    Remove-ItemProperty -Path "$classes\.sql\OpenWithProgids" -Name $progId -ErrorAction SilentlyContinue
+    if ((Get-ItemProperty -Path "$classes\.sql" -Name '(default)' -ErrorAction SilentlyContinue).'(default)' -eq $progId) {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(($classes -replace '^HKCU:\\', '') + '\.sql', $true)
+        try { $key.DeleteValue('', $false) } finally { $key.Dispose() }
+    }
+    Send-AssocChanged
+}
 
 function Stop-App {
     $exe = Join-Path $InstallDir $exeName
@@ -36,6 +75,7 @@ if ($Uninstall) {
     if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force }
     if (Test-Path $startMenu) { Remove-Item $startMenu -Force }
     if (Test-Path $uninstallKey) { Remove-Item $uninstallKey -Recurse -Force }
+    Unregister-SqlFiles
     Write-Host "$appName uninstalled." -ForegroundColor Green
     return
 }
@@ -103,5 +143,7 @@ $uninstallCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"& 
     $type = if ($_.Value -is [int]) { 'DWord' } else { 'String' }
     New-ItemProperty -Path $uninstallKey -Name $_.Key -Value $_.Value -PropertyType $type -Force | Out-Null
 }
+
+Register-SqlFiles $exePath $AssociateSqlFiles.IsPresent
 
 Write-Host "$appName $ver installed to $InstallDir" -ForegroundColor Green

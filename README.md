@@ -18,11 +18,16 @@ Options (append after the closing parentheses):
 
 - `-Version v1.0.0` installs a specific release
 - `-InstallDir <path>` installs somewhere else
+- `-AssociateSqlFiles` makes Sqlzilla the default app for `.sql` files
 - `-Uninstall` removes Sqlzilla
+
+Both installers add Sqlzilla to the **Open with** list for `.sql` files.
 
 ### Option 2: Setup.exe
 
-Download `Sqlzilla-Setup-<arch>.exe` from the [latest release](https://github.com/judgewest2000/sqlzilla/releases/latest) and run it.
+Download `Sqlzilla-Setup-<arch>.exe` from the [latest release](https://github.com/judgewest2000/sqlzilla/releases/latest) and run it. Tick **Open .sql files with Sqlzilla by default** to make it the default app for `.sql` files.
+
+If another app already owns `.sql`, Windows asks which app to use the next time you open one.
 
 ### Uninstall
 
@@ -33,6 +38,8 @@ Use Windows Settings > Apps, or run the one-liner above with `-Uninstall`.
 - **Server groups**: a tree of groups, each with a name and colour. Under each group are servers:
   - A server without a database expands into its list of databases.
   - A server with a database is a leaf that opens straight into that database.
+- **Explorer search**: the box above the tree (Ctrl+Shift+F) filters by group, server and database name. Press Enter to open the first match, or Esc to clear.
+- **Open .sql files from Explorer**: Sqlzilla asks which server or database to open the file on, using a searchable tree. Files opened while Sqlzilla is running go to the existing window as new tabs.
 - **Colour-coded windows**: query windows, tabs, the title bar and the status bar are tinted with the group's colour.
 - **Read-only groups**: connections use `ApplicationIntent=ReadOnly`, and scripts containing writes (INSERT, UPDATE, DELETE, DDL and so on) ask for confirmation before running.
 - **Authentication**: SQL Server login, Windows, Microsoft Entra ID (interactive/MFA, default credentials, password, service principal) or a raw connection string.
@@ -71,6 +78,7 @@ Like Notepad++, open tabs are remembered between runs in `%LOCALAPPDATA%\Sqlzill
 | F5 / Ctrl+Enter / Ctrl+E | Execute (selection or whole script) |
 | Ctrl+N | New query for the selected server |
 | Ctrl+O / Ctrl+S | Open / save a .sql file |
+| Ctrl+Shift+F | Search servers and databases |
 | Ctrl+W | Close tab |
 | Ctrl+R | Show or hide results |
 | Ctrl+F | Find |

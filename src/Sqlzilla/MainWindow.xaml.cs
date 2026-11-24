@@ -44,6 +44,7 @@ public sealed partial class MainWindow : Window
         RebuildTree(expandGroups: true);
         RestoreSession();
         _sessionTimer.Tick += (_, _) => SaveSession();
+        DatabaseListsChanged += OnDatabaseListsChanged;
         Root.Loaded += async (_, _) => await CheckForUpdateAsync();
         AppWindow.Closing += OnClosing;
     }
@@ -81,26 +82,52 @@ public sealed partial class MainWindow : Window
 
     // ------------------------------------------------------------------ tree
 
-    private void RebuildTree(bool expandGroups = false)
+    private void RebuildTree(bool expandGroups = false, ISet<string>? expanded = null)
     {
-        var expanded = new HashSet<string>(Flatten(RootEntries).Where(e => e.IsExpanded).Select(e => e.Id));
+        expanded ??= _explorerFilter.Length > 0 ? new HashSet<string>() : ExpandedIds();
         var selectedId = (ServerTree.SelectedItem as ExplorerEntry)?.Id;
         RootEntries.Clear();
+        foreach (var entry in BuildExplorerEntries(_explorerFilter, expanded, expandGroups)) RootEntries.Add(entry);
+        EmptyHint.Text = _groups.Count == 0
+            ? "No groups yet. Create a group (e.g. Production, Develop) and add servers to it."
+            : $"Nothing matches \u201C{_explorerFilter}\u201D.";
+        EmptyHint.Visibility = RootEntries.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (selectedId != null && Flatten(RootEntries).FirstOrDefault(e => e.Id == selectedId) is { } selected) ServerTree.SelectedItem = selected;
+    }
+
+    private HashSet<string> ExpandedIds() => new(Flatten(RootEntries).Where(e => e.IsExpanded).Select(e => e.Id));
+
+    /// <summary>
+    /// Builds explorer entries. With a filter, keeps groups, servers and (already loaded) databases whose names contain it,
+    /// and expands everything so the matches are visible.
+    /// </summary>
+    private List<ExplorerEntry> BuildExplorerEntries(string filter, ISet<string> expanded, bool expandGroups)
+    {
+        var searching = filter.Length > 0;
+        bool Matches(string text) => text.Contains(filter, StringComparison.OrdinalIgnoreCase);
+        var result = new List<ExplorerEntry>();
         foreach (var g in _groups)
         {
+            var groupMatches = searching && Matches(g.Name);
             var groupEntry = ExplorerEntry.ForGroup(g);
-            groupEntry.IsExpanded = expandGroups || expanded.Contains(g.Id);
             foreach (var s in g.Servers)
             {
+                _databaseCache.TryGetValue(s.Id, out var cached);
+                var serverMatches = !searching || groupMatches || Matches(s.DisplayName) || Matches(s.ResolvedServer) || (s.HasDatabase && Matches(s.ResolvedDatabase));
+                var databases = serverMatches ? cached : cached?.Where(Matches).ToList();
+                if (!serverMatches && (databases == null || databases.Count == 0)) continue;
+
                 var serverEntry = ExplorerEntry.ForServer(g, s);
-                if (!s.HasDatabase && _databaseCache.TryGetValue(s.Id, out var cached)) FillDatabases(serverEntry, cached);
-                serverEntry.IsExpanded = !s.HasDatabase && expanded.Contains(s.Id) && serverEntry.DatabasesLoaded;
+                if (!s.HasDatabase && databases != null) FillDatabases(serverEntry, databases);
+                // While searching, open servers that are only listed because of a matching database.
+                serverEntry.IsExpanded = !s.HasDatabase && serverEntry.DatabasesLoaded && (searching ? !serverMatches : expanded.Contains(s.Id));
                 groupEntry.Children.Add(serverEntry);
             }
-            RootEntries.Add(groupEntry);
+            if (searching && !groupMatches && groupEntry.Children.Count == 0) continue;
+            groupEntry.IsExpanded = searching || expandGroups || expanded.Contains(g.Id);
+            result.Add(groupEntry);
         }
-        EmptyHint.Visibility = _groups.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        if (selectedId != null && Flatten(RootEntries).FirstOrDefault(e => e.Id == selectedId) is { } selected) ServerTree.SelectedItem = selected;
+        return result;
     }
 
     private static IEnumerable<ExplorerEntry> Flatten(IEnumerable<ExplorerEntry> entries) =>
@@ -278,6 +305,7 @@ public sealed partial class MainWindow : Window
     private void RefreshAll_Click(object sender, RoutedEventArgs e)
     {
         _databaseCache.Clear();
+        _searchLoads.Clear();
         foreach (var entry in Flatten(RootEntries).Where(x => x.Kind == ExplorerEntryKind.Server).ToList())
         {
             if (entry.IsExpanded) _ = LoadDatabasesAsync(entry, true);
@@ -357,7 +385,8 @@ public sealed partial class MainWindow : Window
         {
             ServerTree.SelectedItem = s;
             _lastServerId = r.Server.Id;
-            if (r.Server.HasDatabase) OpenQuery(s);
+            if (_pendingFiles.Count > 0) await OpenPendingFilesAsync();
+            else if (r.Server.HasDatabase) OpenQuery(s);
             else s.IsExpanded = true;
         }
     }
@@ -423,20 +452,23 @@ public sealed partial class MainWindow : Window
     /// <summary>New query on the selected tree entry, else the current tab's connection, else the last used server.</summary>
     private void NewQuery()
     {
-        if (ServerTree.SelectedItem is ExplorerEntry { Server: not null } selected && selected.Kind != ExplorerEntryKind.Placeholder)
+        if (DefaultConnection() is not var (group, server, database))
         {
-            OpenQuery(selected);
+            NewServer_Click(this, new RoutedEventArgs());
             return;
         }
-        if (CurrentQuery is { } current)
-        {
-            AddTab(new QueryTab(current.Group, current.Server, current.Database));
-            return;
-        }
+        _lastServerId = server.Id;
+        AddTab(new QueryTab(group, server, database));
+    }
+
+    private (ServerGroup Group, ServerConnection Server, string Database)? DefaultConnection()
+    {
+        if (ServerTree.SelectedItem is ExplorerEntry { Server: { } selectedServer } selected && selected.Kind != ExplorerEntryKind.Placeholder)
+            return (selected.Group, selectedServer, selected.TargetDatabase);
+        if (CurrentQuery is { } current) return (current.Group, current.Server, current.Database);
         var group = _groups.FirstOrDefault(g => g.Servers.Any(s => s.Id == _lastServerId)) ?? _groups.FirstOrDefault(g => g.Servers.Count > 0);
         var server = group?.Servers.FirstOrDefault(s => s.Id == _lastServerId) ?? group?.Servers.FirstOrDefault();
-        if (group != null && server != null) AddTab(new QueryTab(group, server, server.ResolvedDatabase));
-        else NewServer_Click(this, new RoutedEventArgs());
+        return group != null && server != null ? (group, server, server.ResolvedDatabase) : null;
     }
 
     private void NewQuery_Click(object sender, RoutedEventArgs e) => NewQuery();

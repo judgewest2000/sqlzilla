@@ -22,8 +22,16 @@ public static class Dialogs
         DefaultButton = ContentDialogButton.Primary,
     };
 
+    /// <summary>WinUI allows one ContentDialog at a time; dialogs that can pop up unprompted (updates, files opened from Explorer) wait their turn.</summary>
+    public static async Task WhenNoDialogOpenAsync(XamlRoot root)
+    {
+        while (VisualTreeHelper.GetOpenPopupsForXamlRoot(root).Any(p => p.Child is ContentDialog))
+            await Task.Delay(250);
+    }
+
     public static async Task ShowErrorAsync(XamlRoot root, string title, string message)
     {
+        await WhenNoDialogOpenAsync(root);
         var dialog = new ContentDialog
         {
             XamlRoot = root,
@@ -36,6 +44,7 @@ public static class Dialogs
 
     public static async Task<bool> ConfirmAsync(XamlRoot root, string title, string message, string confirm = "Delete")
     {
+        await WhenNoDialogOpenAsync(root);
         var dialog = Create(root, title, new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap }, confirm);
         dialog.DefaultButton = ContentDialogButton.Close;
         return await dialog.ShowAsync() == ContentDialogResult.Primary;
@@ -340,6 +349,7 @@ public static class Dialogs
             ("Ctrl+O / Ctrl+S", "Open / save .sql file"),
             ("Ctrl+Space", "Autocomplete tables, columns, keywords"),
             ("Ctrl+F / F3", "Find in script"),
+            ("Ctrl+Shift+F", "Search servers and databases"),
             ("Ctrl+R", "Show or hide the results pane"),
             ("Ctrl+W", "Close query window"),
             ("Ctrl+C / Ctrl+Shift+C", "Copy grid rows (with headers)"),
@@ -414,6 +424,7 @@ public static class Dialogs
     /// <summary>Asks to install an update; on accept downloads it, launches the installer and exits the app.</summary>
     public static async Task OfferUpdateAsync(XamlRoot root, UpdateInfo update)
     {
+        await WhenNoDialogOpenAsync(root);
         var message = new TextBlock
         {
             Text = $"Sqlzilla {update.Version} is available (you have {UpdateService.CurrentVersion.ToString(3)}). Update now? Sqlzilla will restart.",
