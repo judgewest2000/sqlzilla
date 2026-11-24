@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.5.5 (2026-11-24)
+
+- Query tabs show Azure SQL servers without the `.database.windows.net` suffix (e.g. `myserver.database.windows.net` shows as `myserver`). The full name is still shown in the tooltip and explorer.
+
 ## 1.5.4 (2026-11-24)
 - **Lock first column.** The new button next to Results/Messages keeps the first column visible while you scroll sideways, like Excel's Freeze First Column. It applies to every results grid and stays on until you close Sqlzilla.
 

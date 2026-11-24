@@ -632,7 +632,7 @@ public sealed partial class MainWindow : Window
         header.Children.Add(new TextBlock { Text = query.Title, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis });
         header.Children.Add(new TextBlock
         {
-            Text = query.Database.Length > 0 ? $"{query.Server.DisplayName}.{query.Database}" : query.Server.DisplayName,
+            Text = query.Database.Length > 0 ? $"{query.Server.TabName}.{query.Database}" : query.Server.TabName,
             MaxWidth = 220, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
             Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
         });

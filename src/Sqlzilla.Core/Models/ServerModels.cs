@@ -104,6 +104,21 @@ public sealed class ServerConnection
     [JsonIgnore]
     public string DisplayName => Name.Trim().Length > 0 ? Name.Trim() : ResolvedServer.Length > 0 ? ResolvedServer : "(no server)";
 
+    /// <summary>
+    /// <see cref="DisplayName"/> for space-starved places like tabs: Azure SQL's "tcp:x.database.windows.net,1433" becomes "x".
+    /// </summary>
+    [JsonIgnore]
+    public string TabName
+    {
+        get
+        {
+            var name = DisplayName;
+            var match = System.Text.RegularExpressions.Regex.Match(name, @"^(?:tcp:)?(?<host>[^.,\s]+)\.database\.windows\.net\.?(?:,\d+)?$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            return match.Success ? match.Groups["host"].Value : name;
+        }
+    }
+
     public ServerConnection Clone() => new()
     {
         Id = Id,

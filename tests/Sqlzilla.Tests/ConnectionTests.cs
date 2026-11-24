@@ -129,4 +129,12 @@ public class ResultFormattingTests
         Assert.Equal("NULL\r\nx y", tsv);
         Assert.Equal("a\r\n42", ResultExport.ToTsv([new("a", "int")], [["42"]], includeHeaders: true));
     }
+
+    [Theory]
+    [InlineData("aimc-aue-prod-shared-sql.database.windows.net", "aimc-aue-prod-shared-sql")]
+    [InlineData("tcp:myserver.DATABASE.windows.net,1433", "myserver")]
+    [InlineData("myserver.database.windows.net.evil.com", "myserver.database.windows.net.evil.com")]
+    [InlineData("sql01\\SQLEXPRESS", "sql01\\SQLEXPRESS")]
+    public void TabNameDropsAzureSqlSuffix(string server, string expected) =>
+        Assert.Equal(expected, new ServerConnection { Server = server }.TabName);
 }
