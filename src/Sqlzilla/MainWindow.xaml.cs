@@ -46,6 +46,7 @@ public sealed partial class MainWindow : Window
         RestoreSession();
         _sessionTimer.Tick += (_, _) => SaveSession();
         DatabaseListsChanged += OnDatabaseListsChanged;
+        Tabs.SizeChanged += (_, _) => { foreach (var t in Tabs.TabItems.OfType<TabViewItem>()) t.MaxWidth = TabMaxWidth; };
         Root.Loaded += async (_, _) => await CheckForUpdateAsync();
         AppWindow.Closing += OnClosing;
     }
@@ -553,6 +554,7 @@ public sealed partial class MainWindow : Window
             Content = query,
             HorizontalContentAlignment = HorizontalAlignment.Stretch,
             VerticalContentAlignment = VerticalAlignment.Stretch,
+            MaxWidth = TabMaxWidth,
         };
         query.StateChanged += (_, _) =>
         {
@@ -620,24 +622,33 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
+    /// <summary>A tab may take at most half the query area before its text is trimmed.</summary>
+    private double TabMaxWidth => Tabs.ActualWidth > 0 ? Tabs.ActualWidth / 2 : double.PositiveInfinity;
+
     private static void UpdateTabHeader(TabViewItem tab, QueryTab query)
     {
         var color = GroupColors.Parse(query.Group.Color);
-        var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        header.Children.Add(new Border
+        // Tabs size to their content; when capped at TabMaxWidth the server/database text (star column) trims first.
+        var header = new Grid { ColumnSpacing = 6 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        void Add(FrameworkElement e, int column) { Grid.SetColumn(e, column); header.Children.Add(e); }
+        Add(new Border
         {
             Width = 10, Height = 10, CornerRadius = new CornerRadius(5),
             Background = new SolidColorBrush(color), VerticalAlignment = VerticalAlignment.Center,
-        });
-        header.Children.Add(new TextBlock { Text = query.Title, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis });
-        header.Children.Add(new TextBlock
+        }, 0);
+        Add(new TextBlock { Text = query.Title, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis }, 1);
+        Add(new TextBlock
         {
             Text = query.Database.Length > 0 ? $"{query.Server.TabName}.{query.Database}" : query.Server.TabName,
-            MaxWidth = 220, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
+            FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis,
             Foreground = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
-        });
+        }, 2);
         if (query.IsDirty)
-            header.Children.Add(new TextBlock { Text = "●", FontSize = 10, VerticalAlignment = VerticalAlignment.Center, Foreground = new SolidColorBrush(color) });
+            Add(new TextBlock { Text = "●", FontSize = 10, VerticalAlignment = VerticalAlignment.Center, Foreground = new SolidColorBrush(color) }, 3);
         tab.Header = header;
         tab.Background = new SolidColorBrush(GroupColors.WithAlpha(color, 0x30));
         ToolTipService.SetToolTip(tab, $"{query.Group.Name} · {query.Description}");
