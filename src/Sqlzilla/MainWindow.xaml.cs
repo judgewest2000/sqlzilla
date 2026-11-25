@@ -378,6 +378,7 @@ public sealed partial class MainWindow : Window
     {
         _databaseCache.Clear();
         _searchLoads.Clear();
+        _searchLoadsFailed.Clear();
         foreach (var entry in Flatten(RootEntries).Where(x => x.Kind == ExplorerEntryKind.Server).ToList())
         {
             if (entry.IsExpanded) _ = LoadDatabasesAsync(entry, true);

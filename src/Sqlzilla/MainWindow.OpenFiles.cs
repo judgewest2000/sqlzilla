@@ -14,6 +14,7 @@ public sealed partial class MainWindow
     private string _explorerFilter = "";
     private HashSet<string> _expandedBeforeSearch = new();
     private readonly HashSet<string> _searchLoads = new();
+    private readonly HashSet<string> _searchLoadsFailed = new();
     private readonly List<string> _pendingFiles = new();   // opened from Explorer before any server existed
     private readonly SemaphoreSlim _openFilesGate = new(1, 1);
 
@@ -26,7 +27,13 @@ public sealed partial class MainWindow
     {
         var filter = ExplorerSearch.Text.Trim();
         if (filter == _explorerFilter) return;
-        if (_explorerFilter.Length == 0) _expandedBeforeSearch = ExpandedIds();
+        if (_explorerFilter.Length == 0)
+        {
+            _expandedBeforeSearch = ExpandedIds();
+            // A new search retries servers that failed last time (e.g. you've since signed in to Entra).
+            _searchLoads.ExceptWith(_searchLoadsFailed);
+            _searchLoadsFailed.Clear();
+        }
         _explorerFilter = filter;
         RebuildTree(expanded: filter.Length == 0 ? _expandedBeforeSearch : null);
         if (filter.Length > 0) LoadDatabaseListsForSearch();
@@ -65,14 +72,15 @@ public sealed partial class MainWindow
 
     /// <summary>
     /// Fetches database lists so searches can find databases on servers that haven't been expanded yet.
-    /// Skips interactive Entra sign-in, which would pop up a login window just because someone typed in the search box.
+    /// Interactive Entra servers are only loaded if an account is already signed in: typing in the search box must never
+    /// pop up a login window.
     /// </summary>
     private void LoadDatabaseListsForSearch()
     {
         foreach (var group in _groups)
             foreach (var server in group.Servers)
             {
-                if (server.HasDatabase || server.AuthMode == AuthMode.EntraInteractive || _databaseCache.ContainsKey(server.Id)) continue;
+                if (server.HasDatabase || _databaseCache.ContainsKey(server.Id)) continue;
                 if (_searchLoads.Add(server.Id)) _ = LoadDatabaseListAsync(group, server);
             }
     }
@@ -81,9 +89,13 @@ public sealed partial class MainWindow
     {
         try
         {
-            _databaseCache[server.Id] = await Task.Run(() => ConnectionFactory.ListDatabasesAsync(server, group.IsReadOnly, CancellationToken.None));
+            _databaseCache[server.Id] = await Task.Run(() => ConnectionFactory.ListDatabasesAsync(server, group.IsReadOnly, CancellationToken.None, silentSignIn: true));
         }
-        catch { return; }   // unreachable servers show their error when expanded
+        catch
+        {
+            _searchLoadsFailed.Add(server.Id);
+            return;   // unreachable servers show their error when expanded
+        }
         DatabaseListsChanged?.Invoke();
     }
 

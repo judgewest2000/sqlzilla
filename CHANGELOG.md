@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.6.2 (2026-11-25)
+
+- **Server search** now finds databases on collapsed servers that use *Microsoft Entra MFA (interactive)*, not just SQL logins. It reuses an account you've already signed in with this session (any server in the same tenant) and never pops up a sign-in window; if you haven't signed in yet, expand the server once.
+
 ## 1.6.1 (2026-11-25)
 
 - **Save as CSV** now includes every row. The grid still shows the first 500,000 rows of a result set, but the rest are kept in a temp file instead of being discarded, so the CSV has them all.

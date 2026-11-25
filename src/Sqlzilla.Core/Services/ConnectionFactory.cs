@@ -84,6 +84,7 @@ public static class ConnectionFactory
     {
         var provider = new ActiveDirectoryAuthenticationProvider();
         provider.SetParentActivityOrWindowFunc(() => parentWindow());
+        var wrapped = new EntraAuthProvider(provider, parentWindow);
 #pragma warning disable CS0618
         SqlAuthenticationMethod[] methods =
         [
@@ -98,7 +99,7 @@ public static class ConnectionFactory
             SqlAuthenticationMethod.ActiveDirectoryWorkloadIdentity,
         ];
 #pragma warning restore CS0618
-        foreach (var m in methods) SqlAuthenticationProvider.SetProvider(m, provider);
+        foreach (var m in methods) SqlAuthenticationProvider.SetProvider(m, wrapped);
     }
 
     /// <summary>Opens a connection and returns a short description of who we connected as.</summary>
@@ -112,10 +113,21 @@ public static class ConnectionFactory
         return $"Connected as {r.GetValue(0)} to {r.GetValue(1)} (SQL Server {r.GetValue(2)}).";
     }
 
-    /// <summary>Databases the login can access, system databases first.</summary>
-    public static async Task<List<string>> ListDatabasesAsync(ServerConnection server, bool readOnlyIntent, CancellationToken ct)
+    /// <summary>
+    /// Databases the login can access, system databases first.
+    /// With <paramref name="silentSignIn"/>, interactive Entra sign-in only uses an account that's already signed in
+    /// and fails rather than showing a sign-in window.
+    /// </summary>
+    public static async Task<List<string>> ListDatabasesAsync(ServerConnection server, bool readOnlyIntent, CancellationToken ct, bool silentSignIn = false)
     {
-        await using var conn = new SqlConnection(Build(server, readOnlyIntent: readOnlyIntent));
+        var connectionString = Build(server, readOnlyIntent: readOnlyIntent);
+        if (silentSignIn)
+        {
+            EntraAuthProvider.SilentOnly = true;
+            // Unpooled, so a failed silent attempt can't put the pool the real connections use into its error-blocking period.
+            connectionString = new SqlConnectionStringBuilder(connectionString) { Pooling = false }.ConnectionString;
+        }
+        await using var conn = new SqlConnection(connectionString);
         await conn.OpenAsync(ct);
         return await ListDatabasesAsync(conn, ct);
     }
