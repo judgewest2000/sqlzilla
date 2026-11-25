@@ -96,7 +96,7 @@ On startup, Sqlzilla checks GitHub for a newer release and asks whether to updat
 
 ## Build from source
 
-Requires the .NET 9 SDK.
+Requires the .NET 11 SDK.
 
 ```powershell
 # Runs tests, then publishes a self-contained build to .\publish\win-x64
