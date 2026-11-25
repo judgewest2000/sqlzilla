@@ -48,7 +48,7 @@ Use Windows Settings > Apps, or run the one-liner above with `-Uninstall`.
   - Runs `GO` batches.
   - Executes the selection only, if there is one.
   - Cancel a running query.
-  - Copy results or save them as CSV.
+  - Copy results or save them as CSV. The grid shows the first 500,000 rows of a result set; Save as CSV writes them all.
 - **Results grid**: selection works like Excel.
   - Drag a box over cells, or click or drag row numbers and column headers. Shift extends the selection, Ctrl adds ranges, and the top-left corner selects everything.
   - **Lock first column** (next to Results/Messages) keeps the first column in view while you scroll sideways, like Excel's Freeze First Column. It stays on until you close Sqlzilla.

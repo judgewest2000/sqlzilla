@@ -1,6 +1,7 @@
 using System.Data;
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using Microsoft.Data.SqlClient;
 using Sqlzilla.Sql;
 
@@ -11,22 +12,31 @@ public sealed record ResultColumn(string Name, string TypeName);
 /// <summary>
 /// One result set, filled while the query is still running. The reader appends rows to a pending buffer;
 /// <see cref="Commit"/> moves them into <see cref="Rows"/>, so the consumer's thread is the only one that touches it.
+/// Rows beyond <see cref="RowLimit"/> aren't kept in memory but spooled to a temp file, so a CSV export still has them all.
 /// </summary>
-public sealed class ResultSet
+public sealed class ResultSet : IDisposable
 {
     private readonly object _pendingLock = new();
     private List<string?[]> _pending = new();
-    private int _received;
-    private volatile bool _truncated;
+    private long _received;
     private volatile bool _complete;
 
+    private readonly object _overflowLock = new();
+    private FileStream? _overflow;
+    private StreamWriter? _overflowWriter;
+    private bool _disposed;
+
     public required IReadOnlyList<ResultColumn> Columns { get; init; }
+
+    /// <summary>How many rows are kept in <see cref="Rows"/> (and shown); later ones only go to the CSV spool.</summary>
+    public int RowLimit { get; init; } = QuerySession.MaxRowsPerResultSet;
 
     /// <summary>A finished set of rows that didn't come from a query (e.g. an import preview).</summary>
     public static ResultSet FromRows(IReadOnlyList<ResultColumn> columns, IEnumerable<string?[]> rows)
     {
         var set = new ResultSet { Columns = columns };
         set.Rows.AddRange(rows);
+        set._received = set.Rows.Count;
         set.MarkComplete();
         return set;
     }
@@ -34,22 +44,96 @@ public sealed class ResultSet
     /// <summary>Committed rows: cell text, or null for SQL NULL.</summary>
     public List<string?[]> Rows { get; } = new();
 
-    /// <summary>The set reached <see cref="QuerySession.MaxRowsPerResultSet"/> and later rows were discarded.</summary>
-    public bool Truncated => _truncated;
+    /// <summary>Rows received so far, including those beyond <see cref="RowLimit"/>.</summary>
+    public long TotalRows => Interlocked.Read(ref _received);
+
+    /// <summary>More than <see cref="RowLimit"/> rows arrived; only the first ones are in <see cref="Rows"/>.</summary>
+    public bool Truncated => TotalRows > RowLimit;
 
     /// <summary>The reader has moved past this set; no more rows will arrive.</summary>
     public bool IsComplete => _complete;
 
-    internal bool IsFull => _received >= QuerySession.MaxRowsPerResultSet;
-
-    internal void MarkTruncated() => _truncated = true;
-
-    internal void MarkComplete() => _complete = true;
+    internal void MarkComplete()
+    {
+        lock (_overflowLock) _overflowWriter?.Flush();
+        _complete = true;
+    }
 
     internal void Add(string?[] row)
     {
-        _received++;
-        lock (_pendingLock) _pending.Add(row);
+        if (TotalRows < RowLimit)
+        {
+            lock (_pendingLock) _pending.Add(row);
+        }
+        else Spool(row);
+        Interlocked.Increment(ref _received);
+    }
+
+    private void Spool(string?[] row)
+    {
+        lock (_overflowLock)
+        {
+            if (_disposed) return;
+            if (_overflowWriter == null)
+            {
+                var path = Path.Combine(Path.GetTempPath(), $"sqlzilla-{Guid.NewGuid():N}.csv");
+                _overflow = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read | FileShare.Delete, 1 << 16, FileOptions.DeleteOnClose);
+                _overflowWriter = new StreamWriter(_overflow, new UTF8Encoding(false), 1 << 16);
+            }
+            ResultExport.WriteCsvRow(_overflowWriter, row);
+        }
+    }
+
+    /// <summary>
+    /// Writes the columns and every row received so far, including those beyond <see cref="RowLimit"/>, as UTF-8 CSV.
+    /// Call from the thread that calls <see cref="Commit"/>; the file itself is written in the background.
+    /// </summary>
+    public Task SaveCsvAsync(string path)
+    {
+        var rows = Rows.ToArray();
+        string? spoolPath = null;
+        long spoolLength = 0;
+        // Spooled rows follow the in-memory ones, so only append them when there's no gap (e.g. rows still pending mid-run).
+        if (rows.Length >= RowLimit)
+        {
+            lock (_overflowLock)
+            {
+                if (_overflowWriter != null && !_disposed)
+                {
+                    _overflowWriter.Flush();
+                    spoolPath = _overflow!.Name;
+                    spoolLength = _overflow.Length;
+                }
+            }
+        }
+        return Task.Run(async () =>
+        {
+            await using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16);
+            await using (var writer = new StreamWriter(file, new UTF8Encoding(true), 1 << 16, leaveOpen: true))
+                ResultExport.WriteCsv(writer, Columns, rows);
+            if (spoolPath == null) return;
+            await using var spool = new FileStream(spoolPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16);
+            var buffer = new byte[1 << 16];
+            for (var left = spoolLength; left > 0;)
+            {
+                var read = await spool.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, left)));
+                if (read == 0) break;
+                await file.WriteAsync(buffer.AsMemory(0, read));
+                left -= read;
+            }
+        });
+    }
+
+    /// <summary>Deletes the spool file.</summary>
+    public void Dispose()
+    {
+        lock (_overflowLock)
+        {
+            _disposed = true;
+            _overflowWriter?.Dispose();
+            _overflowWriter = null;
+            _overflow = null;
+        }
     }
 
     /// <summary>Moves rows received since the last call into <see cref="Rows"/> and returns how many. Call from one thread only.</summary>
@@ -341,11 +425,6 @@ public sealed class QuerySession : IAsyncDisposable
                 {
                     while (await reader.ReadAsync(ct))
                     {
-                        if (set.IsFull)
-                        {
-                            set.MarkTruncated();
-                            continue;   // keep draining so following result sets and messages arrive
-                        }
                         reader.GetValues(values);
                         var row = new string?[values.Length];
                         for (var c = 0; c < values.Length; c++) row[c] = Format(values[c]);
@@ -357,7 +436,7 @@ public sealed class QuerySession : IAsyncDisposable
                     set.MarkComplete();
                 }
                 if (set.Truncated)
-                    AddMessage(result, new(MessageKind.Info, $"Result set {number} was limited to the first {MaxRowsPerResultSet:N0} rows."));
+                    AddMessage(result, new(MessageKind.Info, $"Result set {number} returned {set.TotalRows:N0} rows; only the first {MaxRowsPerResultSet:N0} are shown, but Save as CSV includes them all."));
             }
             while (await reader.NextResultAsync(ct));
         }

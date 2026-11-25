@@ -406,7 +406,7 @@ public sealed partial class QueryTab : UserControl
             ResultTabs.SelectedItem = ResultsTabItem;
             UpdateResultTabs();
         }
-        var rows = _grids.Sum(g => g.ResultSet.Rows.Count);
+        var rows = _grids.Sum(g => g.ResultSet.TotalRows);
         RowsText.Text = rows == 1 ? "1 row" : $"{rows:N0} rows";
     }
 
@@ -448,7 +448,11 @@ public sealed partial class QueryTab : UserControl
 
     private void RemoveGrids()
     {
-        foreach (var grid in _grids) grid.SaveCsvRequested -= OnSaveCsvRequested;
+        foreach (var grid in _grids)
+        {
+            grid.SaveCsvRequested -= OnSaveCsvRequested;
+            grid.ResultSet.Dispose();
+        }
         _grids.Clear();
         _stack?.Children.Clear();
         _stack = null;
@@ -558,7 +562,8 @@ public sealed partial class QueryTab : UserControl
         if (file == null) return;
         try
         {
-            await File.WriteAllTextAsync(file.Path, ResultExport.ToCsv(grid.ResultSet.Columns, grid.ResultSet.Rows), new System.Text.UTF8Encoding(true));
+            grid.Refresh();
+            await grid.ResultSet.SaveCsvAsync(file.Path);
         }
         catch (Exception ex)
         {

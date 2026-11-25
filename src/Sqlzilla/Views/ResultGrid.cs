@@ -267,7 +267,7 @@ public sealed partial class ResultGrid : UserControl
         // viewport, so rows spill to the bottom of the box (whose rounded corners do clip) and would cover the note.
         _truncatedNote = new TextBlock
         {
-            Text = $"Showing the first {QuerySession.MaxRowsPerResultSet:N0} rows; the rest were discarded.",
+            Text = "",
             Margin = new Thickness(8, 4, 8, 0),
             Foreground = Res("SystemFillColorCautionBrush"),
             Visibility = Visibility.Collapsed,
@@ -309,7 +309,12 @@ public sealed partial class ResultGrid : UserControl
             if (!_manuallySized.Contains(-1) && RowNumberAutoWidth(_set) is var rn && rn > _rowNumberWidth) SetColumnWidth(-1, rn);
             UpdateContentSize();
         }
-        if (_set.Truncated) _truncatedNote.Visibility = Visibility.Visible;
+        if (_set.Truncated)
+        {
+            var soFar = _set.IsComplete ? "" : " so far";
+            _truncatedNote.Text = $"Showing the first {_set.RowLimit:N0} of {_set.TotalRows:N0} rows{soFar}; Save as CSV includes them all.";
+            _truncatedNote.Visibility = Visibility.Visible;
+        }
         return added;
     }
 

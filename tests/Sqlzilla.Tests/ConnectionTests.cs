@@ -123,6 +123,29 @@ public class ResultFormattingTests
     }
 
     [Fact]
+    public async Task CsvExportIncludesRowsBeyondTheDisplayLimit()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"sqlzilla-test-{Guid.NewGuid():N}.csv");
+        using var set = new ResultSet { Columns = [new("n", "int")], RowLimit = 2 };
+        try
+        {
+            for (var i = 1; i <= 5; i++) set.Add([i.ToString()]);
+            set.MarkComplete();
+            set.Commit();
+
+            Assert.Equal(2, set.Rows.Count);
+            Assert.Equal(5, set.TotalRows);
+            Assert.True(set.Truncated);
+            await set.SaveCsvAsync(path);
+            Assert.Equal("n\r\n1\r\n2\r\n3\r\n4\r\n5\r\n", File.ReadAllText(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
     public void TsvWritesNullAndFlattensNewlines()
     {
         var tsv = ResultExport.ToTsv([new("a", "int")], [[null], ["x\ny"]], includeHeaders: false);

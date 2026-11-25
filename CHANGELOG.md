@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.6.1 (2026-11-25)
+
+- **Save as CSV** now includes every row. The grid still shows the first 500,000 rows of a result set, but the rest are kept in a temp file instead of being discarded, so the CSV has them all.
+
 ## 1.6.0 (2026-11-25)
 
 - Upgraded to .NET 11.

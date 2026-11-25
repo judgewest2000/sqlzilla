@@ -16,10 +16,25 @@ public static class ResultExport
     /// <summary>RFC 4180 CSV; NULLs become empty fields.</summary>
     public static string ToCsv(IReadOnlyList<ResultColumn> columns, IEnumerable<string?[]> rows)
     {
-        var sb = new StringBuilder();
-        sb.AppendJoin(',', columns.Select(c => CsvField(c.Name))).Append("\r\n");
-        foreach (var row in rows) sb.AppendJoin(',', row.Select(v => CsvField(v ?? ""))).Append("\r\n");
-        return sb.ToString();
+        var writer = new StringWriter();
+        WriteCsv(writer, columns, rows);
+        return writer.ToString();
+    }
+
+    public static void WriteCsv(TextWriter writer, IReadOnlyList<ResultColumn> columns, IEnumerable<string?[]> rows)
+    {
+        WriteCsvRow(writer, columns.Select(c => c.Name).ToArray());
+        foreach (var row in rows) WriteCsvRow(writer, row);
+    }
+
+    public static void WriteCsvRow(TextWriter writer, string?[] row)
+    {
+        for (var i = 0; i < row.Length; i++)
+        {
+            if (i > 0) writer.Write(',');
+            writer.Write(CsvField(row[i] ?? ""));
+        }
+        writer.Write("\r\n");
     }
 
     private static string Flatten(string s) => s.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ').Replace('\t', ' ');
