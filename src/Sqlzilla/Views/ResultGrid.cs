@@ -25,7 +25,7 @@ public sealed partial class ResultGrid : UserControl
     private const double MinColumnWidth = 48;
     private const double MaxAutoColumnWidth = 420;
     private const double GripWidth = 6;
-    private const int AutoSizeSampleRows = 300;
+    private const int MeasuredValueLength = 200;
     private const string RowTemplateXaml =
         "<DataTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"><StackPanel Orientation=\"Horizontal\" /></DataTemplate>";
 
@@ -36,6 +36,7 @@ public sealed partial class ResultGrid : UserControl
     private readonly ResultSet _set;
     private readonly RowSource _rows;
     private readonly double[] _widths;
+    private readonly int[] _longest;   // per column: length of the longest value already measured (cells use a monospaced font)
     private double _rowNumberWidth;
     private readonly HashSet<int> _manuallySized = new();   // column indexes; -1 is the row-number column
     private readonly TextBlock _truncatedNote;
@@ -99,7 +100,9 @@ public sealed partial class ResultGrid : UserControl
         _selectedBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x48, accent.R, accent.G, accent.B));
         _headerSelectedBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(0x60, accent.R, accent.G, accent.B));
         _accentBrush = new SolidColorBrush(accent);
-        _widths = set.Columns.Select((c, i) => AutoWidth(set, i)).ToArray();
+        _widths = set.Columns.Select((_, i) => HeaderWidth(set, i)).ToArray();
+        _longest = new int[set.Columns.Count];
+        FitRows(0, set.Rows.Count, apply: false);
         _rowNumberWidth = RowNumberAutoWidth(set);
 
         IsTabStop = true;
@@ -293,7 +296,7 @@ public sealed partial class ResultGrid : UserControl
 
     /// <summary>
     /// Shows rows that arrived since the last call (the query may still be running) and returns how many there were.
-    /// Columns keep widening to fit until the first <see cref="AutoSizeSampleRows"/> rows are in, unless resized by hand.
+    /// Columns keep widening to fit every row that arrives, unless resized by hand.
     /// </summary>
     public int Refresh()
     {
@@ -302,9 +305,7 @@ public sealed partial class ResultGrid : UserControl
         if (added > 0)
         {
             _rows.NotifyAppended(start, added);
-            if (start < AutoSizeSampleRows)
-                for (var c = 0; c < _widths.Length; c++)
-                    if (!_manuallySized.Contains(c) && AutoWidth(_set, c) is var w && w > _widths[c]) SetColumnWidth(c, w);
+            FitRows(start, start + added, apply: true);
             if (!_manuallySized.Contains(-1) && RowNumberAutoWidth(_set) is var rn && rn > _rowNumberWidth) SetColumnWidth(-1, rn);
             UpdateContentSize();
         }
@@ -319,21 +320,47 @@ public sealed partial class ResultGrid : UserControl
 
     // ------------------------------------------------------------------ sizing
 
-    private static double AutoWidth(ResultSet set, int column)
-    {
-        // Measure the few longest sample values for real rather than trusting character counts.
-        var candidates = Enumerable.Range(0, Math.Min(set.Rows.Count, AutoSizeSampleRows))
-            .Select(r => set.Rows[r][column] ?? "NULL")
-            .Select(v => v.Length > 200 ? v[..200] : v)
-            .Distinct()
-            .OrderByDescending(v => v.Length)
-            .Take(5);
+    private static string CellText(string? value) =>
+        value == null ? "NULL" : value.Length > MeasuredValueLength ? value[..MeasuredValueLength] : value;
 
+    private static double HeaderWidth(ResultSet set, int column)
+    {
         var name = set.Columns[column].Name.Length > 0 ? set.Columns[column].Name : "(No column name)";
-        var widest = Measure(name, Microsoft.UI.Text.FontWeights.SemiBold, null) + 8;
-        foreach (var value in candidates)
-            widest = Math.Max(widest, Measure(value, Microsoft.UI.Text.FontWeights.Normal, CellFont));
-        return Math.Clamp(widest + 14, MinColumnWidth, MaxAutoColumnWidth);
+        return Math.Clamp(Measure(name, Microsoft.UI.Text.FontWeights.SemiBold, null) + 22, MinColumnWidth, MaxAutoColumnWidth);
+    }
+
+    private static double ValueWidth(string value) =>
+        Math.Clamp(Measure(value, Microsoft.UI.Text.FontWeights.Normal, CellFont) + 14, MinColumnWidth, MaxAutoColumnWidth);
+
+    /// <summary>
+    /// Widens auto-sized columns for rows [from, to). Cells are monospaced, so only a value longer than any seen
+    /// so far needs measuring — cheap enough to cover every row, not just the first screenful.
+    /// </summary>
+    private void FitRows(int from, int to, bool apply)
+    {
+        for (var c = 0; c < _widths.Length; c++)
+        {
+            if (_manuallySized.Contains(c)) continue;
+            string? longest = null;
+            for (var r = from; r < to; r++)
+            {
+                var value = _set.Rows[r][c];
+                var length = value == null ? 4 : Math.Min(value.Length, MeasuredValueLength);
+                if (length <= _longest[c]) continue;
+                _longest[c] = length;
+                longest = CellText(value);
+            }
+            if (longest == null || ValueWidth(longest) is var w && w <= _widths[c]) continue;
+            if (apply) SetColumnWidth(c, w);
+            else _widths[c] = w;
+        }
+    }
+
+    /// <summary>Best fit over every row (double-clicking a column's resize grip).</summary>
+    private double AutoWidth(int column)
+    {
+        var longest = _set.Rows.Select(r => CellText(r[column])).MaxBy(v => v.Length);
+        return Math.Max(HeaderWidth(_set, column), longest == null ? 0 : ValueWidth(longest));
     }
 
     private static double RowNumberAutoWidth(ResultSet set) =>
@@ -544,7 +571,7 @@ public sealed partial class ResultGrid : UserControl
         grip.PointerCaptureLost += (_, _) => { dragging = false; ProtectedCursor = null; };
         grip.DoubleTapped += (_, e) =>
         {
-            SetColumnWidth(column, column < 0 ? RowNumberAutoWidth(_set) : AutoWidth(_set, column));
+            SetColumnWidth(column, column < 0 ? RowNumberAutoWidth(_set) : AutoWidth(column));
             e.Handled = true;
         };
         return grip;

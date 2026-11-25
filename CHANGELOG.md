@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.5.8 (2026-11-25)
+
+- Result columns (including a locked first column) now widen to fit every row as it arrives, not just the first 300, so longer values further down (e.g. Ids going from 1 to 100002) are no longer cut off. Double-clicking a column's resize grip also fits every row.
+
 ## 1.5.7 (2026-11-25)
 
 - About > Release notes has an **Export…** button that saves the full list of release notes as a Markdown (or text) file.
