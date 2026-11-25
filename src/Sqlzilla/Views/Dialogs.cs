@@ -429,6 +429,26 @@ public static class Dialogs
         return found;
     }
 
+    /// <summary>Copies CHANGELOG.md wherever the user picks; returns a status line (shown inline because only one ContentDialog can be open).</summary>
+    private static async Task<string> ExportReleaseNotesAsync(string changelogPath)
+    {
+        var picker = new Windows.Storage.Pickers.FileSavePicker { SuggestedFileName = "Sqlzilla release notes" };
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, MainWindow.Handle);
+        picker.FileTypeChoices.Add("Markdown", new List<string> { ".md" });
+        picker.FileTypeChoices.Add("Text", new List<string> { ".txt" });
+        var file = await picker.PickSaveFileAsync();
+        if (file == null) return "";
+        try
+        {
+            File.Copy(changelogPath, file.Path, overwrite: true);
+            return $"Saved to {file.Path}";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return $"Couldn't save: {ex.Message}";
+        }
+    }
+
     /// <summary>What changed in each version, read from the CHANGELOG.md shipped next to the exe.</summary>
     private static FrameworkElement BuildReleaseNotes(Action back)
     {
@@ -436,13 +456,41 @@ public static class Dialogs
         var backButton = new HyperlinkButton { Content = "← Back to About", Padding = new Thickness(0) };
         backButton.Click += (_, _) => back();
         panel.Children.Add(backButton);
-        panel.Children.Add(new TextBlock { Text = "Release notes", Style = (Style)Application.Current.Resources["SubtitleTextBlockStyle"] });
+        var titleRow = new Grid();
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        titleRow.Children.Add(new TextBlock { Text = "Release notes", Style = (Style)Application.Current.Resources["SubtitleTextBlockStyle"] });
+        var changelogPath = Path.Combine(AppContext.BaseDirectory, "CHANGELOG.md");
+        var exportStatus = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = Secondary, Visibility = Visibility.Collapsed };
+        var exportButton = new Button
+        {
+            Content = new StackPanel
+            {
+                Orientation = Orientation.Horizontal, Spacing = 6,
+                Children = { new FontIcon { Glyph = "\uEDE1", FontSize = 14 }, new TextBlock { Text = "Export…" } },
+            },
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        ToolTipService.SetToolTip(exportButton, "Save the full release notes as a Markdown file");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(exportButton, "Export release notes");
+        exportButton.Click += async (_, _) =>
+        {
+            exportStatus.Text = await ExportReleaseNotesAsync(changelogPath);
+            exportStatus.Visibility = exportStatus.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        };
+        Grid.SetColumn(exportButton, 1);
+        titleRow.Children.Add(exportButton);
+        panel.Children.Add(titleRow);
+        panel.Children.Add(exportStatus);
 
         IReadOnlyList<ReleaseNote> releases;
-        try { releases = ReleaseNotes.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "CHANGELOG.md"))); }
+        try { releases = ReleaseNotes.Parse(File.ReadAllText(changelogPath)); }
         catch (IOException) { releases = []; }
         if (releases.Count == 0)
+        {
             panel.Children.Add(new TextBlock { Text = "Release notes aren't available.", Foreground = Secondary });
+            exportButton.IsEnabled = false;
+        }
 
         var current = UpdateService.CurrentVersion.ToString(3);
         var code = (FontFamily)Application.Current.Resources["CodeFont"];

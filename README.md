@@ -92,7 +92,7 @@ Like Notepad++, open tabs are remembered between runs in `%LOCALAPPDATA%\Sqlzill
 
 ## Updates
 
-On startup, Sqlzilla checks GitHub for a newer release and asks whether to update. You can also use **Check for updates** in the About dialog. **Release notes** in the About dialog shows what changed in each version (from [CHANGELOG.md](CHANGELOG.md)).
+On startup, Sqlzilla checks GitHub for a newer release and asks whether to update. You can also use **Check for updates** in the About dialog. **Release notes** in the About dialog shows what changed in each version (from [CHANGELOG.md](CHANGELOG.md)); **Export…** there saves the full list as a Markdown file.
 
 ## Build from source
 

@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.5.7 (2026-11-25)
+
+- About > Release notes has an **Export…** button that saves the full list of release notes as a Markdown (or text) file.
+
 ## 1.5.6 (2026-11-25)
 
 - Query tabs are as wide as their title and server/database need, so they're no longer cut off. A tab only trims its server/database text once it would take more than half the width of the query area.
