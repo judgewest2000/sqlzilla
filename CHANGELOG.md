@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.6.5 (2026-11-26)
+
+- **Server search** now finds databases on collapsed *Microsoft Entra MFA (interactive)* servers in other tenants too. An account you've signed in with on any server is reused across tenants. If you haven't signed in yet, search tries the account you're signed in to Windows with, still without ever showing a sign-in window.
+
 ## 1.6.4 (2026-11-26)
 
 - **Search** in the explorer and in the *Open .sql file on...* picker now waits until you've paused typing for 400 ms before refiltering. Clearing the box applies straight away, and Enter acts on what you've typed even if the wait hasn't finished.

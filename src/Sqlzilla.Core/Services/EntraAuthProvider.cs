@@ -36,9 +36,12 @@ internal sealed class EntraAuthProvider(SqlAuthenticationProvider inner, Func<In
         if (parameters.AuthenticationMethod != SqlAuthenticationMethod.ActiveDirectoryInteractive)
             return await inner.AcquireTokenAsync(parameters);
 
-        var app = _apps.GetOrAdd(TenantAuthority(parameters.Authority), authority => PublicClientApplicationBuilder
+        // One app per sign-in host, with the tenant chosen per request: an account signed in for one server's tenant is
+        // then visible to servers in other tenants too (separate apps per tenant each had their own account list).
+        var (host, tenant) = SplitAuthority(parameters.Authority);
+        var app = _apps.GetOrAdd(host, h => PublicClientApplicationBuilder
             .Create(ClientId)
-            .WithAuthority(authority)
+            .WithAuthority($"{h}/organizations")
             .WithRedirectUri("ms-appx-web://microsoft.aad.brokerplugin/" + ClientId)
             .WithBroker(new BrokerOptions(BrokerOptions.OperatingSystems.Windows))
             .WithParentActivityOrWindow(() => parentWindow())
@@ -49,22 +52,30 @@ internal sealed class EntraAuthProvider(SqlAuthenticationProvider inner, Func<In
 
         try
         {
-            var accounts = await app.GetAccountsAsync();
-            var account = hint == null
-                ? accounts.FirstOrDefault()
-                : accounts.FirstOrDefault(a => string.Equals(a.Username, hint, StringComparison.OrdinalIgnoreCase));
-            if (account != null)
+            var accounts = (await app.GetAccountsAsync())
+                .Where(a => hint == null || string.Equals(a.Username, hint, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            // Background loads fall back to the account signed in to Windows: WAM can use it without showing a window.
+            // Not when connecting for real, where the sign-in window lets you pick a different account.
+            if (SilentOnly) accounts.Add(PublicClientApplication.OperatingSystemAccount);
+            foreach (var account in accounts)
             {
                 try
                 {
-                    var silent = await app.AcquireTokenSilent(scopes, account).WithCorrelationId(parameters.ConnectionId).ExecuteAsync();
+                    var silent = await app.AcquireTokenSilent(scopes, account)
+                        .WithTenantId(tenant)
+                        .WithCorrelationId(parameters.ConnectionId)
+                        .ExecuteAsync();
+                    if (hint != null && !string.Equals(silent.Account?.Username, hint, StringComparison.OrdinalIgnoreCase)) continue;
                     return new SqlAuthenticationToken(silent.AccessToken, silent.ExpiresOn);
                 }
-                catch (MsalUiRequiredException) when (!SilentOnly) { }
+                catch (MsalUiRequiredException) { }
+                catch (MsalClientException) when (ReferenceEquals(account, PublicClientApplication.OperatingSystemAccount)) { }
             }
             if (SilentOnly) throw new SignInException("Not signed in; expand the server to sign in.");
 
             var result = await app.AcquireTokenInteractive(scopes)
+                .WithTenantId(tenant)
                 .WithCorrelationId(parameters.ConnectionId)
                 .WithLoginHint(hint)
                 .ExecuteAsync();
@@ -76,12 +87,12 @@ internal sealed class EntraAuthProvider(SqlAuthenticationProvider inner, Func<In
         }
     }
 
-    /// <summary>"https://login.windows.net/{tenant}/oauth2/authorize" becomes "https://login.windows.net/{tenant}".</summary>
-    internal static string TenantAuthority(string authority)
+    /// <summary>"https://login.windows.net/{tenant}/oauth2/authorize" becomes ("https://login.windows.net", "{tenant}").</summary>
+    internal static (string Host, string Tenant) SplitAuthority(string authority)
     {
         var uri = new Uri(authority);
         var tenant = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "organizations";
-        return $"{uri.Scheme}://{uri.Authority}/{tenant}";
+        return ($"{uri.Scheme}://{uri.Authority}", tenant);
     }
 
     private sealed class SignInException(string message, Exception? causedBy = null)

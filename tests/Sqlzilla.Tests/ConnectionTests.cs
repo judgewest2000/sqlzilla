@@ -66,10 +66,10 @@ public class ConnectionTests
     }
 
     [Theory]
-    [InlineData("https://login.windows.net/72f988bf-86f1-41af-91ab-2d7cd011db47/", "https://login.windows.net/72f988bf-86f1-41af-91ab-2d7cd011db47")]
-    [InlineData("https://login.microsoftonline.com/contoso.com/oauth2/authorize", "https://login.microsoftonline.com/contoso.com")]
-    public void EntraAuthorityKeepsOnlyTheTenant(string authority, string expected) =>
-        Assert.Equal(expected, EntraAuthProvider.TenantAuthority(authority));
+    [InlineData("https://login.windows.net/72f988bf-86f1-41af-91ab-2d7cd011db47/", "https://login.windows.net", "72f988bf-86f1-41af-91ab-2d7cd011db47")]
+    [InlineData("https://login.microsoftonline.com/contoso.com/oauth2/authorize", "https://login.microsoftonline.com", "contoso.com")]
+    public void EntraAuthoritySplitsHostAndTenant(string authority, string host, string tenant) =>
+        Assert.Equal((host, tenant), EntraAuthProvider.SplitAuthority(authority));
 
     [Fact]
     public void FirstRunHasDefaultGroups() =>
