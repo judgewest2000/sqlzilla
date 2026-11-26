@@ -72,6 +72,47 @@
                 </Setter>
             </Style>
 
+            <!-- Replaces WinUIEdit's editor template so the scroll bars sit outside the text (like the results grid)
+                 instead of over it. Scintilla sizes its surface from ImageTarget, so it must stay in the first cell only. -->
+            <Style TargetType="editor:EditorBaseControl">
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="editor:EditorBaseControl">
+                            <Grid
+                                Padding="{TemplateBinding Padding}"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="{TemplateBinding CornerRadius}">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Border x:Name="ImageTarget" AllowDrop="True" />
+                                <ScrollBar
+                                    x:Name="VerticalScrollBar"
+                                    Grid.Column="1"
+                                    Margin="2,0,0,0"
+                                    IndicatorMode="MouseIndicator"
+                                    IsTabStop="False"
+                                    Orientation="Vertical" />
+                                <ScrollBar
+                                    x:Name="HorizontalScrollBar"
+                                    Grid.Row="1"
+                                    Margin="0,2,0,0"
+                                    IndicatorMode="MouseIndicator"
+                                    IsTabStop="False"
+                                    Orientation="Horizontal" />
+                            </Grid>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
             <Style x:Key="IconButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
                 <Setter Property="Padding" Value="8,6" />
                 <Setter Property="Background" Value="Transparent" />

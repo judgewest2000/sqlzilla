@@ -174,7 +174,38 @@ public sealed partial class CodeEditor : UserControl
         ApplyStyles();
     }
 
-    private void OnControlLoaded(object sender, RoutedEventArgs args) => UpdatePlaceholder();
+    private void OnControlLoaded(object sender, RoutedEventArgs args)
+    {
+        UpdatePlaceholder();
+        ExpandScrollBars(_control);
+    }
+
+    /// <summary>Keeps the editor's scroll bars full-size (as in the results grid) and lets the wheel scroll over them.</summary>
+    private void ExpandScrollBars(DependencyObject parent)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is Microsoft.UI.Xaml.Controls.Primitives.ScrollBar bar)
+            {
+                if (bar.Tag != null) continue;
+                bar.Tag = true;
+                void Expand() => VisualStateManager.GoToState(bar, "ExpandedWithoutAnimation", false);
+                Expand();
+                bar.PointerExited += (_, _) => Expand();
+                bar.PointerCaptureLost += (_, _) => Expand();
+                bar.PointerWheelChanged += (_, e) =>
+                {
+                    var delta = e.GetCurrentPoint(bar).Properties.MouseWheelDelta;
+                    var lines = -delta / 40;   // Scintilla's default: 3 lines per notch
+                    if (bar.Orientation == Orientation.Vertical) Editor.LineScroll(0, lines);
+                    else Editor.LineScroll(lines * 3, 0);
+                    e.Handled = true;
+                };
+            }
+            else ExpandScrollBars(child);
+        }
+    }
 
     private void OnAutoCCharDeleted(Editor sender, object args) => _ = ShowCompletionsAsync(false);
 

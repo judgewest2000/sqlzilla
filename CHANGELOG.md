@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.6.3 (2026-11-26)
+
+- **Query editor:** the scroll bars now sit outside the text, like the results grid, so they no longer cover the last line or the end of long lines. They stay full-size instead of only widening on hover, and the mouse wheel works over them.
+
 ## 1.6.2 (2026-11-25)
 
 - **Server search** now finds databases on collapsed servers that use *Microsoft Entra MFA (interactive)*, not just SQL logins. It reuses an account you've already signed in with this session (any server in the same tenant) and never pops up a sign-in window; if you haven't signed in yet, expand the server once.
