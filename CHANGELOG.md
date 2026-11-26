@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.6.4 (2026-11-26)
+
+- **Search** in the explorer and in the *Open .sql file on...* picker now waits until you've paused typing for 400 ms before refiltering. Clearing the box applies straight away, and Enter acts on what you've typed even if the wait hasn't finished.
+
 ## 1.6.3 (2026-11-26)
 
 - **Query editor:** the scroll bars now sit outside the text, like the results grid, so they no longer cover the last line or the end of long lines. They stay full-size instead of only widening on hover, and the mouse wheel works over them.

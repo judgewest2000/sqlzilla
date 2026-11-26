@@ -11,7 +11,10 @@ namespace Sqlzilla;
 // Explorer search, and opening .sql files from Explorer / the command line.
 public sealed partial class MainWindow
 {
+    private const int SearchDebounceMs = 400;
+
     private string _explorerFilter = "";
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _explorerSearchTimer;
     private HashSet<string> _expandedBeforeSearch = new();
     private readonly HashSet<string> _searchLoads = new();
     private readonly HashSet<string> _searchLoadsFailed = new();
@@ -23,7 +26,37 @@ public sealed partial class MainWindow
 
     // ------------------------------------------------------------------ explorer search
 
-    private void ExplorerSearch_TextChanged(object sender, TextChangedEventArgs e)
+    /// <summary>Restarts the 400 ms wait on each keystroke, so the tree refilters once typing pauses. Clearing applies at once.</summary>
+    private static void Debounce(ref Microsoft.UI.Dispatching.DispatcherQueueTimer? timer, string text, Action apply)
+    {
+        timer?.Stop();
+        if (text.Trim().Length == 0)
+        {
+            apply();
+            return;
+        }
+        if (timer == null)
+        {
+            timer = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread().CreateTimer();
+            timer.Interval = TimeSpan.FromMilliseconds(SearchDebounceMs);
+            timer.IsRepeating = false;
+            timer.Tick += (_, _) => apply();
+        }
+        timer.Start();
+    }
+
+    /// <summary>Applies a pending debounced search now (e.g. Enter pressed before the wait elapsed).</summary>
+    private static void Flush(Microsoft.UI.Dispatching.DispatcherQueueTimer? timer, Action apply)
+    {
+        if (timer is not { IsRunning: true }) return;
+        timer.Stop();
+        apply();
+    }
+
+    private void ExplorerSearch_TextChanged(object sender, TextChangedEventArgs e) =>
+        Debounce(ref _explorerSearchTimer, ExplorerSearch.Text, ApplyExplorerSearch);
+
+    private void ApplyExplorerSearch()
     {
         var filter = ExplorerSearch.Text.Trim();
         if (filter == _explorerFilter) return;
@@ -41,6 +74,7 @@ public sealed partial class MainWindow
 
     private void ExplorerSearch_KeyDown(object sender, KeyRoutedEventArgs e)
     {
+        if (e.Key is VirtualKey.Enter or VirtualKey.Down) Flush(_explorerSearchTimer, ApplyExplorerSearch);
         switch (e.Key)
         {
             case VirtualKey.Escape when ExplorerSearch.Text.Length > 0:
@@ -327,13 +361,16 @@ public sealed partial class MainWindow
         void OnListsChanged() { if (search.Text.Trim().Length > 0) Refresh(); }
         DatabaseListsChanged += OnListsChanged;
 
-        search.TextChanged += (_, _) =>
+        void ApplySearch()
         {
             Refresh();
             if (search.Text.Trim().Length > 0) LoadDatabaseListsForSearch();
-        };
+        }
+        Microsoft.UI.Dispatching.DispatcherQueueTimer? searchTimer = null;
+        search.TextChanged += (_, _) => Debounce(ref searchTimer, search.Text, ApplySearch);
         search.KeyDown += (_, e) =>
         {
+            if (e.Key is VirtualKey.Enter or VirtualKey.Down) Flush(searchTimer, ApplySearch);
             if (e.Key == VirtualKey.Enter && Target(current) is { } target)
             {
                 e.Handled = true;
@@ -353,7 +390,11 @@ public sealed partial class MainWindow
             await Dialogs.WhenNoDialogOpenAsync(XamlRoot);
             await dialog.ShowAsync();
         }
-        finally { DatabaseListsChanged -= OnListsChanged; }
+        finally
+        {
+            DatabaseListsChanged -= OnListsChanged;
+            searchTimer?.Stop();
+        }
 
         return chosen is { } c ? (c.Group, c.Server!, c.TargetDatabase) : null;
     }
