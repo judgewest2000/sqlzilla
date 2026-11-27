@@ -335,7 +335,7 @@ public static class Dialogs
         var art = new Image
         {
             Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(new Uri(Path.Combine(AppContext.BaseDirectory, "Assets", "AboutArt.png"))),
-            Width = 200, Height = 200,
+            Width = 160, Height = 160,
             HorizontalAlignment = HorizontalAlignment.Center,
         };
 
@@ -363,15 +363,16 @@ public static class Dialogs
             shortcuts.Children.Add(k); shortcuts.Children.Add(a);
         }
 
-        var panel = new StackPanel { Spacing = 10, Width = 420 };
-        panel.Children.Add(art);
-        panel.Children.Add(new TextBlock
+        var overview = new StackPanel { Spacing = 10, Width = 220 };
+        var panel = new StackPanel { Spacing = 10 };
+        overview.Children.Add(art);
+        overview.Children.Add(new TextBlock
         {
             Text = "Sqlzilla", HorizontalAlignment = HorizontalAlignment.Center,
             Style = (Style)Application.Current.Resources["TitleTextBlockStyle"],
         });
-        panel.Children.Add(new TextBlock { Text = $"Version {version}", Foreground = Secondary, HorizontalAlignment = HorizontalAlignment.Center });
-        panel.Children.Add(new TextBlock
+        overview.Children.Add(new TextBlock { Text = $"Version {version}", Foreground = Secondary, HorizontalAlignment = HorizontalAlignment.Center });
+        overview.Children.Add(new TextBlock
         {
             Text = "A lightweight SQL Server query tool — colour-coded server groups, Entra ID sign-in and fast result grids.",
             TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 4, 0, 8),
@@ -390,7 +391,13 @@ public static class Dialogs
             Padding = new Thickness(0),
         });
 
-        var about = new ScrollViewer { Content = panel };
+        var layout = new Grid { ColumnSpacing = 24, Width = Math.Min(900, Math.Max(0, root.Size.Width - 96)) };
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(panel, 1);
+        layout.Children.Add(overview);
+        layout.Children.Add(panel);
+        var about = new ScrollViewer { Content = layout };
         var dialog = new ContentDialog
         {
             XamlRoot = root,
@@ -398,10 +405,12 @@ public static class Dialogs
             CloseButtonText = "Close",
             DefaultButton = ContentDialogButton.Close,
         };
+        dialog.Resources["ContentDialogMaxWidth"] = 1000.0;
+        dialog.Resources["ContentDialogMaxHeight"] = Math.Max(0, root.Size.Height - 48);
 
         // WinUI shows one ContentDialog at a time, so release notes replace the About content rather than stacking.
         var notesButton = new Button { Content = "Release notes" };
-        notesButton.Click += (_, _) => dialog.Content = BuildReleaseNotes(() => dialog.Content = about);
+        notesButton.Click += (_, _) => dialog.Content = BuildReleaseNotes(() => dialog.Content = about, layout.Width);
 
         UpdateInfo? found = null;
         var checkResult = new TextBlock { Foreground = Secondary, TextWrapping = TextWrapping.Wrap };
@@ -450,9 +459,9 @@ public static class Dialogs
     }
 
     /// <summary>What changed in each version, read from the CHANGELOG.md shipped next to the exe.</summary>
-    private static FrameworkElement BuildReleaseNotes(Action back)
+    private static FrameworkElement BuildReleaseNotes(Action back, double width)
     {
-        var panel = new StackPanel { Spacing = 4, Width = 420 };
+        var panel = new StackPanel { Spacing = 4, Width = width };
         var backButton = new HyperlinkButton { Content = "← Back to About", Padding = new Thickness(0) };
         backButton.Click += (_, _) => back();
         panel.Children.Add(backButton);

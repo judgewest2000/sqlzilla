@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.6.6 (2026-11-27)
+
+- **About** uses a wider, side-by-side layout so the artwork, information, keyboard shortcuts and update buttons fit without scrolling in normal-sized windows. Release notes also use the wider dialog.
+
 ## 1.6.5 (2026-11-26)
 
 - **Server search** now finds databases on collapsed *Microsoft Entra MFA (interactive)* servers in other tenants too. An account you've signed in with on any server is reused across tenants. If you haven't signed in yet, search tries the account you're signed in to Windows with, still without ever showing a sign-in window.
